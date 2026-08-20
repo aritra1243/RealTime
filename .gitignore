@@ -1,0 +1,40 @@
+# ─── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+env/
+.env
+*.egg-info/
+dist/
+build/
+
+# ─── ML Model Weights (too large for Git) ────────────────
+*.pt
+*.pth
+*.onnx
+*.tflite
+
+# ─── Backend Output ──────────────────────────────────────
+backend/output/
+backend/models/
+backend/datasets/
+
+# ─── Node / Frontend ────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.production.local
+
+# ─── IDE ─────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ─── OS ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
