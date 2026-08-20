@@ -17,7 +17,7 @@ import traceback
 
 import cv2
 import numpy as np
-from fastapi import Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import gradio as gr
@@ -234,34 +234,18 @@ with gr.Blocks(title="PotholeVision AI") as demo:
     btn.click(fn=gradio_predict, inputs=input_img, outputs=[output_img, output_txt], api_name="analyze_road")
 
 
-# ─── Register REST API Routes on demo.app ────────────────────────────────────
-
-demo.app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ─── FastAPI Handlers for Custom REST Endpoints ──────────────────────────────
 
 
-@demo.app.get("/api/health")
-@demo.app.post("/api/health")
-def health_check():
-    """Health check endpoint."""
-    return {
+async def health_handler(request: Request):
+    return JSONResponse(content={
         "status": "ok",
         "service": "PotholeVision API",
         "version": "2.0.0",
-    }
+    })
 
 
-@demo.app.post("/api/analyze")
-async def analyze_image_endpoint(request: Request):
-    """
-    Analyze image from multipart form data or base64 JSON payload.
-    Supports real-time live camera streaming and file uploads.
-    """
+async def analyze_handler(request: Request):
     try:
         content_type = request.headers.get("content-type", "")
 
@@ -305,10 +289,7 @@ async def analyze_image_endpoint(request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-@demo.app.get("/api/sample")
-@demo.app.post("/api/sample")
-async def analyze_sample_endpoint():
-    """Analyze built-in sample image."""
+async def sample_handler(request: Request):
     try:
         sample_path = os.path.join(config.ASSETS_DIR, "sample_pothole.jpg")
         if not os.path.exists(sample_path):
@@ -333,9 +314,7 @@ async def analyze_sample_endpoint():
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-@demo.app.post("/api/analyze/3d")
-async def get_3d_mesh_endpoint(request: Request):
-    """Get 3D surface mesh data for a specific detection."""
+async def analyze_3d_handler(request: Request):
     try:
         data = await request.json()
         det_index = data.get("detection_index", 0)
@@ -407,4 +386,24 @@ if __name__ == "__main__":
     print("  PotholeVision — Launching Server on port", port)
     print("=" * 60)
 
-    demo.launch(server_name="0.0.0.0", server_port=port)
+    # 1. Launch Gradio with non-blocking thread so we can register custom routes on live app
+    demo.launch(server_name="0.0.0.0", server_port=port, prevent_thread_lock=True)
+
+    # 2. Add CORS middleware & custom routes directly to demo.app.router
+    demo.app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    demo.app.add_api_route("/api/health", health_handler, methods=["GET", "POST", "OPTIONS"])
+    demo.app.add_api_route("/api/analyze", analyze_handler, methods=["POST", "OPTIONS"])
+    demo.app.add_api_route("/api/sample", sample_handler, methods=["GET", "POST", "OPTIONS"])
+    demo.app.add_api_route("/api/analyze/3d", analyze_3d_handler, methods=["POST", "OPTIONS"])
+
+    print("[API] All REST routes (/api/health, /api/analyze, /api/sample, /api/analyze/3d) registered on live server.")
+
+    # 3. Keep main thread alive
+    demo.block_thread()
