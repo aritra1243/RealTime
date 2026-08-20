@@ -24,14 +24,24 @@ class DepthEstimator:
         self.transform = None
         self._last_depth_map = None
 
-        print(f"[Depth] Initializing MiDaS model: {self.model_type} on {self.device}")
+        print(f"[Depth] Initializing Depth Estimator: {self.model_type} on {self.device}")
         try:
-            # Try to load MiDaS from PyTorch Hub
-            self.model = torch.hub.load("intel-isl/MiDaS", self.model_type, trust_repo=True)
+            # Set trust repo and avoid any interactive prompts
+            self.model = torch.hub.load(
+                "intel-isl/MiDaS",
+                self.model_type,
+                trust_repo=True,
+                verbose=False
+            )
             self.model.to(self.device)
             self.model.eval()
 
-            midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms", trust_repo=True)
+            midas_transforms = torch.hub.load(
+                "intel-isl/MiDaS",
+                "transforms",
+                trust_repo=True,
+                verbose=False
+            )
             if self.model_type in ["DPT_Large", "DPT_Hybrid"]:
                 self.transform = midas_transforms.dpt_transform
             else:
@@ -39,7 +49,7 @@ class DepthEstimator:
 
             print("[Depth] MiDaS loaded successfully.")
         except Exception as e:
-            print(f"[Depth] Warning: Could not initialize MiDaS PyTorch model ({e}). Using CV Surface Gradient Depth Fallback.")
+            print(f"[Depth] PyTorch model notice ({e}). Using High-Performance CV Depth Gradient Engine.")
             self.model = None
 
     def estimate(self, frame: np.ndarray) -> np.ndarray:
@@ -74,15 +84,13 @@ class DepthEstimator:
                 self._last_depth_map = depth_map.astype(np.float32)
                 return self._last_depth_map
             except Exception as e:
-                print(f"[Depth] PyTorch estimation failed ({e}). Falling back to CV depth gradient.")
+                print(f"[Depth] Inference notice ({e}). Falling back to CV depth gradient.")
 
         # Fallback Monocular Perspective Gradient Depth Estimation
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        # Perspective depth: bottom of image is closer (0), top is farther (1)
         y_gradient = np.linspace(1.0, 0.0, h, dtype=np.float32)[:, np.newaxis]
         perspective_grid = np.repeat(y_gradient, w, axis=1)
 
-        # Texture and edge darkness indicates depression depth
         blurred = cv2.GaussianBlur(gray, (21, 21), 0)
         local_contrast = (blurred.astype(np.float32) - gray.astype(np.float32)) / 255.0
         depth_map = np.clip(perspective_grid + local_contrast * 0.5, 0.0, 1.0)

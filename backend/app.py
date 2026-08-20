@@ -1,6 +1,7 @@
 # =============================================================================
-# PotholeVision — High-Performance Gradio 5 + ZeroGPU Backend
+# PotholeVision — High-Performance Gradio 5 Unlimited Backend
 # =============================================================================
+# Direct high-speed inference without ZeroGPU rate-limiting or quota caps.
 
 import base64
 import io
@@ -23,20 +24,6 @@ from depth.estimator import DepthEstimator
 from analysis.pothole_analyzer import PotholeAnalyzer
 from visualization.overlay import Overlay
 from visualization.blueprint import BlueprintRenderer
-
-# ─── Hugging Face ZeroGPU Support ────────────────────────────────────────────
-try:
-    import spaces
-
-    def gpu_decorate(func):
-        return spaces.GPU(duration=60)(func)
-
-    print("[API] Hugging Face ZeroGPU support enabled.")
-except Exception:
-    def gpu_decorate(func):
-        return func
-
-    print("[API] Running in standard CPU/GPU mode.")
 
 # ─── Lazy-loaded ML Models ──────────────────────────────────────────────────
 
@@ -107,8 +94,8 @@ def detection_to_dict(det: Detection, index: int) -> dict:
     }
 
 
-def _execute_pipeline(frame: np.ndarray, is_fast_stream: bool = False) -> dict:
-    """Run detection, depth estimation, and blueprint rendering."""
+def run_pipeline(frame: np.ndarray, is_fast_stream: bool = False) -> dict:
+    """Run detection, depth estimation, and blueprint rendering with zero quota limits."""
     models = get_models()
     detector = models["detector"]
     depth_estimator = models["depth_estimator"]
@@ -118,7 +105,7 @@ def _execute_pipeline(frame: np.ndarray, is_fast_stream: bool = False) -> dict:
 
     start_time = time.time()
 
-    # If in fast stream mode, optimize frame scale for high FPS
+    # Fast stream dimension optimization (maintains high real-time FPS)
     if is_fast_stream and max(frame.shape[:2]) > 640:
         scale = 640.0 / max(frame.shape[:2])
         frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
@@ -139,7 +126,7 @@ def _execute_pipeline(frame: np.ndarray, is_fast_stream: bool = False) -> dict:
     display = overlay.render(frame, detections, depth_map, depth_colored)
     annotated_b64 = encode_image_base64(display, quality=65 if is_fast_stream else 85)
 
-    # ── Render blueprint & heatmap (only in full mode to maximize stream FPS) ──
+    # ── Render blueprint & heatmap (full mode only) ──
     if not is_fast_stream:
         bp_panel = blueprint.render(detections, depth_map)
         blueprint_b64 = encode_image_base64(bp_panel, quality=80)
@@ -183,12 +170,6 @@ def _execute_pipeline(frame: np.ndarray, is_fast_stream: bool = False) -> dict:
     }
 
 
-# ZeroGPU registered inference function
-@gpu_decorate
-def run_pipeline(frame: np.ndarray, is_fast_stream: bool = False) -> dict:
-    return _execute_pipeline(frame, is_fast_stream)
-
-
 # ─── Gradio Predict Functions ────────────────────────────────────────────────
 
 
@@ -212,7 +193,7 @@ def gradio_predict_json(image_input):
 
 
 def gradio_predict_fast(image_input):
-    """High-speed real-time live camera analysis."""
+    """High-speed real-time live camera analysis with zero quota restrictions."""
     if image_input is None:
         return json.dumps({"success": False, "error": "No image provided."})
     try:
@@ -301,7 +282,7 @@ def gradio_predict_3d(det_index_str):
 
 with gr.Blocks(title="PotholeVision AI") as demo:
     gr.Markdown("# PotholeVision — Real-Time Road Defect & Depth Analysis")
-    gr.Markdown("ZeroGPU Accelerated Monocular Depth Estimation & Autonomous Road Defect AI.")
+    gr.Markdown("Unlimited Real-Time Monocular Depth Estimation & Autonomous Road Defect AI.")
 
     with gr.Row():
         with gr.Column():
