@@ -19,8 +19,9 @@ plotly>=5.18.0
 pandas>=2.0.0
 pyyaml>=6.0
 
-# Web API (pinned for Gradio 4.44.1 compatibility)
+# Web API & Gradio 4 compatibility pins
 fastapi==0.112.2
 starlette==0.38.2
 pydantic>=2.0.0,<3.0.0
 python-multipart>=0.0.6
+huggingface_hub<0.24.0
