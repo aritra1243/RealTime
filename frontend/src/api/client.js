@@ -1,7 +1,7 @@
 // =============================================================================
 // PotholeVision — API Client
 // =============================================================================
-// Communicates with the Flask backend (Render) from the React frontend (Vercel).
+// Communicates with the Flask backend from the React frontend.
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -9,13 +9,19 @@ const API_BASE = import.meta.env.VITE_API_URL || '';
  * Check backend health.
  */
 export async function checkHealth() {
-  const res = await fetch(`${API_BASE}/api/health`);
-  if (!res.ok) throw new Error('Backend unreachable');
-  return res.json();
+  try {
+    const res = await fetch(`${API_BASE}/api/health`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) throw new Error(`Backend returned status ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    throw new Error(`Cannot connect to backend (${API_BASE || 'local'}). Check if server is running.`);
+  }
 }
 
 /**
- * Upload an image and run the full detection + depth pipeline.
+ * Upload an image file and run the full detection + depth pipeline.
  * @param {File} imageFile - The image file to analyze.
  * @returns {Promise<Object>} Analysis results with detections, metrics, and images.
  */
@@ -30,6 +36,29 @@ export async function analyzeImage(imageFile) {
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: 'Network error' }));
+    throw new Error(error.error || `HTTP ${res.status}`);
+  }
+
+  return res.json();
+}
+
+/**
+ * Analyze a live video / camera frame (base64 string).
+ * Optimized for real-time mobile camera feed streaming.
+ * @param {string} base64Image - Base64 encoded JPEG data URL.
+ * @returns {Promise<Object>} Analysis results.
+ */
+export async function analyzeFrame(base64Image) {
+  const res = await fetch(`${API_BASE}/api/analyze`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ image: base64Image }),
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: 'Frame analysis error' }));
     throw new Error(error.error || `HTTP ${res.status}`);
   }
 
