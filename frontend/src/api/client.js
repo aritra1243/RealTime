@@ -1,7 +1,7 @@
 // =============================================================================
 // PotholeVision — API Client
 // =============================================================================
-// Communicates with the Flask backend from the React frontend.
+// Communicates with the backend from the React frontend.
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -14,7 +14,12 @@ export async function checkHealth() {
       headers: { Accept: 'application/json' },
     });
     if (!res.ok) throw new Error(`Backend returned status ${res.status}`);
-    return await res.json();
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { status: 'ok', raw: text };
+    }
   } catch (err) {
     throw new Error(`Cannot connect to backend (${API_BASE || 'local'}). Check if server is running.`);
   }
