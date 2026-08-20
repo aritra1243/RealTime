@@ -134,7 +134,7 @@ export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGloba
     <div className="space-y-4">
       
       {/* ── Viewport Container ─────────────────────────────────────────────── */}
-      <div className="relative aspect-video w-full overflow-hidden rounded-3xl border border-white/15 bg-zinc-950 shadow-2xl">
+      <div className="relative aspect-[4/3] sm:aspect-video w-full overflow-hidden rounded-3xl border border-white/15 bg-zinc-950 shadow-2xl">
         
         {/* Tactical Corner Brackets */}
         <div className="hud-corner-tl z-20"></div>

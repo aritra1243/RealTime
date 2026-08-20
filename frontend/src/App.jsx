@@ -1,5 +1,5 @@
 // =============================================================================
-// PotholeVision — Main App Dashboard (Monochrome Edition)
+// PotholeVision — Main App Dashboard (Mobile-Responsive Monochrome Edition)
 // =============================================================================
 
 import { useState, useCallback, useEffect } from 'react';
@@ -12,11 +12,14 @@ import DetectionView from './components/DetectionView';
 import ThreeDViewer from './components/ThreeDViewer';
 import AuditTable from './components/AuditTable';
 import { analyzeImage, analyzeSample, checkHealth } from './api/client';
-import { Camera, Upload, AlertCircle, RefreshCw, Layers, ShieldCheck, Sparkles } from 'lucide-react';
+import { Camera, Upload, AlertCircle, RefreshCw, Layers, Sliders } from 'lucide-react';
 
 export default function App() {
   // ── Mode: 'camera' (Live Road Vision) or 'upload' (Single Image) ──
   const [activeMode, setActiveMode] = useState('camera');
+
+  // ── Mobile Responsive Sidebar State (Collapsed by default on mobile) ──
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // ── State ────────────────────────────────────────────────
   const [isLoading, setIsLoading] = useState(false);
@@ -91,12 +94,16 @@ export default function App() {
     <div className="min-h-screen bg-black text-zinc-100 bg-grid-pattern flex flex-col selection:bg-white selection:text-black">
       
       {/* Tactical HUD Header */}
-      <Header backendOnline={backendOnline} />
+      <Header
+        backendOnline={backendOnline}
+        onToggleSidebar={() => setIsSidebarOpen((v) => !v)}
+        isSidebarOpen={isSidebarOpen}
+      />
 
       {/* Main Content Area */}
-      <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col lg:flex-row gap-6 p-4 sm:p-6 lg:p-8">
+      <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col lg:flex-row gap-5 p-3.5 sm:p-6 lg:p-8">
         
-        {/* Left Parameter Sidebar */}
+        {/* Left Parameter Sidebar (Collapsed by default on mobile) */}
         <Sidebar
           confidence={confidence}
           onConfidenceChange={setConfidence}
@@ -106,45 +113,47 @@ export default function App() {
           onToggleBlueprint={() => setShowBlueprint((v) => !v)}
           onAnalyzeSample={handleAnalyzeSample}
           isLoading={isLoading}
+          isOpen={isSidebarOpen}
+          onClose={() => setIsSidebarOpen(false)}
         />
 
         {/* Center Main Dashboard */}
-        <main className="flex-1 space-y-6 min-w-0">
+        <main className="flex-1 space-y-5 sm:space-y-6 min-w-0">
           
           {/* Mode Switcher Tabs */}
-          <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-zinc-950/80 p-1.5 backdrop-blur-xl shadow-lg">
+          <div className="flex items-center gap-1.5 sm:gap-2 rounded-2xl border border-white/10 bg-zinc-950/80 p-1.5 backdrop-blur-xl shadow-lg">
             <button
               onClick={() => setActiveMode('camera')}
-              className={`flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-xs font-bold font-mono uppercase tracking-wider transition-all cursor-pointer ${
+              className={`flex flex-1 items-center justify-center gap-1.5 sm:gap-2 rounded-xl py-2.5 sm:py-3 text-[11px] sm:text-xs font-bold font-mono uppercase tracking-wider transition-all cursor-pointer ${
                 activeMode === 'camera'
                   ? 'bg-white text-black shadow-[0_0_20px_rgba(255,255,255,0.3)]'
                   : 'text-zinc-400 hover:text-white hover:bg-zinc-900/50'
               }`}
             >
-              <Camera className="h-4 w-4" />
-              <span>Live Road Camera Feed</span>
+              <Camera className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              <span className="truncate">Live Road Camera Feed</span>
             </button>
 
             <button
               onClick={() => setActiveMode('upload')}
-              className={`flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-xs font-bold font-mono uppercase tracking-wider transition-all cursor-pointer ${
+              className={`flex flex-1 items-center justify-center gap-1.5 sm:gap-2 rounded-xl py-2.5 sm:py-3 text-[11px] sm:text-xs font-bold font-mono uppercase tracking-wider transition-all cursor-pointer ${
                 activeMode === 'upload'
                   ? 'bg-white text-black shadow-[0_0_20px_rgba(255,255,255,0.3)]'
                   : 'text-zinc-400 hover:text-white hover:bg-zinc-900/50'
               }`}
             >
-              <Upload className="h-4 w-4" />
-              <span>High-Res Road Image Upload</span>
+              <Upload className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              <span className="truncate">Upload Road Image</span>
             </button>
           </div>
 
           {/* Backend warming up notice */}
           {backendOnline === false && (
-            <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/20 bg-zinc-900/80 p-4 text-xs text-zinc-300 backdrop-blur-xl shadow-lg">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-2xl border border-white/20 bg-zinc-900/80 p-3.5 sm:p-4 text-xs text-zinc-300 backdrop-blur-xl shadow-lg">
               <div className="flex items-center gap-2.5">
                 <RefreshCw className="h-4 w-4 animate-spin text-white flex-shrink-0" />
                 <span>
-                  <strong>Hugging Face ZeroGPU Backend:</strong> Server may take ~10-20 seconds on initial cold start.
+                  <strong>Hugging Face ZeroGPU Backend:</strong> Initial cold start may take ~10-20 seconds.
                 </span>
               </div>
               <button
@@ -153,7 +162,7 @@ export default function App() {
                     .then(() => setBackendOnline(true))
                     .catch(() => setBackendOnline(false));
                 }}
-                className="rounded-lg border border-white/20 bg-black px-3 py-1 text-xs font-mono font-bold text-white hover:bg-zinc-800 transition-all cursor-pointer"
+                className="self-end sm:self-auto rounded-lg border border-white/20 bg-black px-3 py-1 text-xs font-mono font-bold text-white hover:bg-zinc-800 transition-all cursor-pointer"
               >
                 Retry Status
               </button>
@@ -162,10 +171,10 @@ export default function App() {
 
           {/* Error Banner */}
           {error && (
-            <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/40 bg-zinc-900 p-4 text-xs font-mono text-white shadow-xl">
+            <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/40 bg-zinc-900 p-3.5 sm:p-4 text-xs font-mono text-white shadow-xl">
               <div className="flex items-center gap-2.5">
                 <AlertCircle className="h-4 w-4 text-white flex-shrink-0" />
-                <span>{error}</span>
+                <span className="break-all">{error}</span>
               </div>
               <button
                 onClick={() => setError(null)}
@@ -212,12 +221,12 @@ export default function App() {
 
           {/* Empty state when no results & upload mode */}
           {!hasResults && !isLoading && !error && activeMode === 'upload' && (
-            <div className="flex min-h-[180px] flex-col items-center justify-center rounded-3xl border border-white/10 bg-zinc-950/60 p-8 text-center backdrop-blur-xl">
+            <div className="flex min-h-[160px] sm:min-h-[180px] flex-col items-center justify-center rounded-3xl border border-white/10 bg-zinc-950/60 p-6 sm:p-8 text-center backdrop-blur-xl">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-zinc-900">
                 <Layers className="h-6 w-6 text-white" />
               </div>
               <p className="text-xs text-zinc-400 max-w-sm">
-                Upload a road photograph or click <strong className="text-white">"Test Sample Road Image"</strong> in the sidebar to view automated pothole segmentation and 3D depth maps.
+                Upload a road photograph or tap <strong className="text-white">"Test Sample Road Image"</strong> in parameters to view automated pothole segmentation and 3D depth maps.
               </p>
             </div>
           )}
@@ -226,8 +235,19 @@ export default function App() {
 
       </div>
 
+      {/* Floating Parameters Button on Mobile for easy access */}
+      <div className="fixed bottom-4 right-4 z-30 lg:hidden">
+        <button
+          onClick={() => setIsSidebarOpen(true)}
+          className="flex items-center gap-2 rounded-full border border-white/20 bg-zinc-900/90 px-4 py-2.5 text-xs font-mono font-bold text-white shadow-2xl backdrop-blur-xl active:scale-95 transition-all cursor-pointer"
+        >
+          <Sliders className="h-4 w-4 text-white" />
+          <span>Parameters</span>
+        </button>
+      </div>
+
       {/* Footer */}
-      <footer className="mt-auto border-t border-white/10 bg-black/90 py-4 text-center text-[11px] font-mono text-zinc-500">
+      <footer className="mt-auto border-t border-white/10 bg-black/90 py-4 text-center text-[10px] sm:text-[11px] font-mono text-zinc-500">
         <span>POTHOLEVISION AI &copy; 2026 &mdash; MONOCULAR DEPTH ESTIMATION &amp; INFRASTRUCTURE AUDIT</span>
       </footer>
 

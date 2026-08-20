@@ -84,13 +84,16 @@ export default function MetricsPanel({ metrics }) {
   ];
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5 w-full">
-      {cards.map((card) => {
+    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3.5 w-full">
+      {cards.map((card, index) => {
         const IconComponent = card.icon;
+        const isFirst = index === 0;
         return (
           <div
             key={card.id}
-            className="group relative flex flex-col justify-between rounded-2xl border border-white/10 bg-zinc-950/80 p-4.5 backdrop-blur-xl shadow-lg hover:border-white/30 hover:bg-zinc-900/90 transition-all duration-300"
+            className={`group relative flex flex-col justify-between rounded-2xl border border-white/10 bg-zinc-950/80 p-3.5 sm:p-4.5 backdrop-blur-xl shadow-lg hover:border-white/30 hover:bg-zinc-900/90 transition-all duration-300 ${
+              isFirst ? 'col-span-2 md:col-span-1' : 'col-span-1'
+            }`}
           >
             {/* Corner Bracket Reticle */}
             <div className="hud-corner-tl opacity-40 group-hover:opacity-100 transition-opacity"></div>
