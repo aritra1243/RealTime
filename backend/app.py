@@ -211,25 +211,25 @@ def gradio_predict(img):
 
     metrics = res["metrics"]
     summary = (
-        f"🛣️ Road Status: {metrics['road_status']}\n"
-        f"🕳️ Potholes Detected: {metrics['pothole_count']}\n"
-        f"📏 Max Depth: {metrics['max_depth']:.4f}\n"
-        f"📦 Total Volume: {metrics['total_volume']:.1f}\n"
-        f"⚡ Latency: {metrics['latency_ms']:.1f} ms"
+        f"Road Status: {metrics['road_status']}\n"
+        f"Potholes Detected: {metrics['pothole_count']}\n"
+        f"Max Depth: {metrics['max_depth']:.4f}\n"
+        f"Total Volume: {metrics['total_volume']:.1f}\n"
+        f"Latency: {metrics['latency_ms']:.1f} ms"
     )
     return ann_rgb, summary
 
 
 with gr.Blocks(title="PotholeVision AI") as demo:
-    gr.Markdown("# 🕳️ PotholeVision — Real-Time Road Defect & Depth Analysis")
+    gr.Markdown("# PotholeVision — Real-Time Road Defect & Depth Analysis")
     gr.Markdown(
         "AI-powered monocular depth estimation, YOLOv8 segmentation, and 3D surface topography.\n\n"
-        "**⚡ REST API is active at `/api/analyze`, `/api/health`, and `/api/analyze/3d` for the React/Vercel frontend.**"
+        "**REST API is active at `/api/analyze`, `/api/health`, and `/api/analyze/3d` for the React/Vercel frontend.**"
     )
     with gr.Row():
         with gr.Column():
             input_img = gr.Image(type="numpy", label="Road Image / Camera Feed")
-            btn = gr.Button("🔍 Analyze Road Defect", variant="primary")
+            btn = gr.Button("Analyze Road Defect", variant="primary")
         with gr.Column():
             output_img = gr.Image(label="Annotated Detection & Depth Map")
             output_txt = gr.Textbox(label="Audit Metrics", lines=6)
@@ -237,7 +237,7 @@ with gr.Blocks(title="PotholeVision AI") as demo:
     btn.click(fn=gradio_predict, inputs=input_img, outputs=[output_img, output_txt])
 
 
-# ─── REST API Route Handlers (FastAPI on demo.app) ───────────────────────────
+# ─── REST API Route Handlers (FastAPI on demo.app with include_in_schema=False) ───
 
 demo.app.add_middleware(
     CORSMiddleware,
@@ -248,7 +248,7 @@ demo.app.add_middleware(
 )
 
 
-@demo.app.get("/api/health")
+@demo.app.get("/api/health", include_in_schema=False)
 async def health_check():
     """Health check endpoint."""
     return {
@@ -258,7 +258,7 @@ async def health_check():
     }
 
 
-@demo.app.post("/api/analyze")
+@demo.app.post("/api/analyze", include_in_schema=False)
 async def analyze_image(request: Request):
     """
     Analyze image from multipart form data or base64 JSON payload.
@@ -308,7 +308,7 @@ async def analyze_image(request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-@demo.app.get("/api/sample")
+@demo.app.get("/api/sample", include_in_schema=False)
 async def analyze_sample():
     """Analyze built-in sample image."""
     try:
@@ -335,7 +335,7 @@ async def analyze_sample():
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-@demo.app.post("/api/analyze/3d")
+@demo.app.post("/api/analyze/3d", include_in_schema=False)
 async def get_3d_mesh(request: Request):
     """Get 3D surface mesh data for a specific detection."""
     try:
@@ -405,13 +405,7 @@ async def get_3d_mesh(request: Request):
 
 port = int(os.environ.get("PORT", 7860))
 print("=" * 60)
-print("  PotholeVision — Launching Server")
-print(f"  Port: {port}")
+print("  PotholeVision — Launching Server on port", port)
 print("=" * 60)
 
-demo.launch(
-    server_name="0.0.0.0",
-    server_port=port,
-    show_api=False,
-    ssr=False,
-)
+demo.launch(server_name="0.0.0.0", server_port=port)
