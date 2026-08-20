@@ -1,9 +1,11 @@
 # =============================================================================
-# PotholeVision — Unified FastAPI + Gradio Backend
+# PotholeVision — Gradio 5 + FastAPI Unified Backend
 # =============================================================================
-# High-performance AI backend with native Hugging Face Gradio & ZeroGPU support,
-# plus full REST API endpoints (/api/analyze, /api/health, /api/analyze/3d, /api/sample)
-# for the Vercel React frontend.
+# Native Hugging Face Spaces & ZeroGPU support + full REST API endpoints:
+#   - GET  /api/health
+#   - POST /api/analyze (multipart image file OR base64 JSON payload for live camera)
+#   - POST /api/analyze/3d (3D surface mesh topography)
+#   - GET  /api/sample (built-in sample road image)
 
 import base64
 import io
@@ -16,7 +18,7 @@ import traceback
 import cv2
 import numpy as np
 import gradio as gr
-from fastapi import FastAPI, Request, File, UploadFile
+from fastapi import Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -221,8 +223,8 @@ def gradio_predict(img):
 with gr.Blocks(title="PotholeVision AI", theme=gr.themes.Soft()) as demo:
     gr.Markdown("# 🕳️ PotholeVision — Real-Time Road Defect & Depth Analysis")
     gr.Markdown(
-        "AI-powered monocular depth estimation, YOLOv8 segmentation, and 3D surface topography.\n"
-        "**REST API is active at `/api/analyze`, `/api/health`, and `/api/analyze/3d` for the React/Vercel frontend.**"
+        "AI-powered monocular depth estimation, YOLOv8 segmentation, and 3D surface topography.\n\n"
+        "**⚡ REST API is active at `/api/analyze`, `/api/health`, and `/api/analyze/3d` for the React/Vercel frontend.**"
     )
     with gr.Row():
         with gr.Column():
@@ -235,12 +237,10 @@ with gr.Blocks(title="PotholeVision AI", theme=gr.themes.Soft()) as demo:
     btn.click(fn=gradio_predict, inputs=input_img, outputs=[output_img, output_txt])
 
 
-# ─── FastAPI REST API Setup ──────────────────────────────────────────────────
+# ─── REST API Route Handlers (FastAPI on demo.app) ───────────────────────────
 
-app = FastAPI(title="PotholeVision API", version="2.0.0")
-
-# Enable CORS for all origins
-app.add_middleware(
+# Configure CORS on the Gradio FastAPI application
+demo.app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
@@ -249,7 +249,7 @@ app.add_middleware(
 )
 
 
-@app.get("/api/health")
+@demo.app.get("/api/health")
 async def health_check():
     """Health check endpoint."""
     return {
@@ -259,7 +259,7 @@ async def health_check():
     }
 
 
-@app.post("/api/analyze")
+@demo.app.post("/api/analyze")
 async def analyze_image(request: Request):
     """
     Analyze image from multipart form data or base64 JSON payload.
@@ -309,7 +309,7 @@ async def analyze_image(request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-@app.get("/api/sample")
+@demo.app.get("/api/sample")
 async def analyze_sample():
     """Analyze built-in sample image."""
     try:
@@ -336,7 +336,7 @@ async def analyze_sample():
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-@app.post("/api/analyze/3d")
+@demo.app.post("/api/analyze/3d")
 async def get_3d_mesh(request: Request):
     """Get 3D surface mesh data for a specific detection."""
     try:
@@ -402,18 +402,13 @@ async def get_3d_mesh(request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-# Mount Gradio Blocks UI onto the root of FastAPI
-app = gr.mount_gradio_app(app, demo, path="/")
-
 # ─── Entry Point ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import uvicorn
-
     port = int(os.environ.get("PORT", 7860))
     print("=" * 60)
-    print("  PotholeVision — FastAPI + Gradio Unified Server")
+    print("  PotholeVision — Gradio 5 + FastAPI Unified Server")
     print(f"  Running on http://0.0.0.0:{port}")
     print("=" * 60)
 
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    demo.launch(server_name="0.0.0.0", server_port=port)
