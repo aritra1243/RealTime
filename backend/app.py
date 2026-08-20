@@ -2,13 +2,7 @@
 # PotholeVision — Flask REST API Backend
 # =============================================================================
 # Serves pothole detection, depth analysis, and 3D mesh data via REST endpoints.
-# Deploy on Render. Frontend (React) calls these endpoints from Vercel.
-#
-# Endpoints:
-#   GET  /api/health       — Health check
-#   POST /api/analyze       — Upload image → detections + annotated image
-#   POST /api/analyze/3d    — Get 3D surface mesh for a specific detection
-#   GET  /api/sample        — Analyze the built-in sample image
+# Compatible with Render, Hugging Face Spaces (CPU & ZeroGPU), and Vercel.
 
 import base64
 import io
@@ -35,13 +29,33 @@ from visualization.overlay import Overlay
 from visualization.blueprint import BlueprintRenderer
 from utils.mesh_exporter import MeshExporter
 
+# ─── Hugging Face ZeroGPU Support ────────────────────────────────────────────
+try:
+    import spaces
+
+    def gpu_decorate(func):
+        return spaces.GPU(duration=60)(func)
+
+    print("[API] Hugging Face ZeroGPU support enabled.")
+except Exception:
+    def gpu_decorate(func):
+        return func
+
+    print("[API] Running in standard CPU/GPU mode.")
+
 # ─── App Setup ───────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
-# Allow all origins in dev; restrict in production via env var
-allowed_origins = os.environ.get("CORS_ORIGINS", "*")
-CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET,PUT,POST,DELETE,OPTIONS"
+    return response
+
 
 # ─── Lazy-loaded ML Models ──────────────────────────────────────────────────
 
@@ -71,13 +85,34 @@ def encode_image_base64(img: np.ndarray, quality: int = 85) -> str:
     return base64.b64encode(buffer).decode("utf-8")
 
 
-def decode_image(file_storage) -> np.ndarray:
-    """Decode an uploaded image file to a BGR OpenCV image."""
-    file_bytes = np.frombuffer(file_storage.read(), np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    if img is None:
-        raise ValueError("Could not decode the uploaded image.")
-    return img
+def decode_image_data(req) -> np.ndarray:
+    """
+    Decode image from multipart file or base64 JSON payload.
+    Supports real-time webcam frames and file uploads.
+    """
+    # 1. Check multipart file
+    if "image" in req.files:
+        file = req.files["image"]
+        if file.filename != "":
+            file_bytes = np.frombuffer(file.read(), np.uint8)
+            img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            if img is not None:
+                return img
+
+    # 2. Check JSON with base64 data
+    if req.is_json:
+        data = req.get_json()
+        if data and "image" in data:
+            b64_str = data["image"]
+            if "," in b64_str:
+                b64_str = b64_str.split(",", 1)[1]
+            img_bytes = base64.b64decode(b64_str)
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is not None:
+                return img
+
+    raise ValueError("No valid 'image' provided (supports file upload or base64 JSON).")
 
 
 def detection_to_dict(det: Detection, index: int) -> dict:
@@ -104,12 +139,8 @@ def detection_to_dict(det: Detection, index: int) -> dict:
     }
 
 
-def run_pipeline(frame: np.ndarray) -> dict:
-    """
-    Run the full detection + depth + analysis pipeline on a single frame.
-
-    Returns a dict with all results ready for JSON serialization.
-    """
+def _execute_pipeline(frame: np.ndarray) -> dict:
+    """Run detection, depth estimation, and blueprint rendering."""
     models = get_models()
     detector = models["detector"]
     depth_estimator = models["depth_estimator"]
@@ -133,7 +164,6 @@ def run_pipeline(frame: np.ndarray) -> dict:
 
     # ── Render annotated overlay ─────────────────────────────
     display = overlay.render(frame, detections, depth_map, depth_colored)
-    display_rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
     annotated_b64 = encode_image_base64(display)
 
     # ── Render blueprint panel ───────────────────────────────
@@ -178,12 +208,35 @@ def run_pipeline(frame: np.ndarray) -> dict:
     }
 
 
+# ZeroGPU registered function
+@gpu_decorate
+def run_pipeline(frame: np.ndarray) -> dict:
+    return _execute_pipeline(frame)
+
+
 # ─── API Routes ──────────────────────────────────────────────────────────────
+
+
+@app.route("/", methods=["GET"])
+def root():
+    """Root endpoint."""
+    return jsonify({
+        "status": "online",
+        "service": "PotholeVision API",
+        "message": "Backend API is running. Connect your Vercel frontend to this URL.",
+        "version": "2.0.0",
+        "endpoints": {
+            "health": "/api/health",
+            "analyze": "/api/analyze (POST - multipart or base64 JSON)",
+            "3d_mesh": "/api/analyze/3d (POST)",
+            "sample": "/api/sample (GET)"
+        }
+    })
 
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
-    """Health check endpoint for Render."""
+    """Health check endpoint."""
     return jsonify({
         "status": "ok",
         "service": "PotholeVision API",
@@ -191,23 +244,17 @@ def health_check():
     })
 
 
-@app.route("/api/analyze", methods=["POST"])
+@app.route("/api/analyze", methods=["POST", "OPTIONS"])
 def analyze_image():
     """
-    Analyze an uploaded road image for potholes.
-
-    Expects: multipart/form-data with an 'image' file field.
-    Returns: JSON with detections, metrics, and base64 annotated images.
+    Analyze a road image for potholes and depth defects.
+    Accepts both multipart/form-data ('image' file) and application/json ({'image': base64}).
     """
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"}), 200
+
     try:
-        if "image" not in request.files:
-            return jsonify({"success": False, "error": "No 'image' file provided."}), 400
-
-        file = request.files["image"]
-        if file.filename == "":
-            return jsonify({"success": False, "error": "Empty filename."}), 400
-
-        frame = decode_image(file)
+        frame = decode_image_data(request)
         result = run_pipeline(frame)
         return jsonify(result)
 
@@ -224,9 +271,17 @@ def analyze_sample():
     try:
         sample_path = os.path.join(config.ASSETS_DIR, "sample_pothole.jpg")
         if not os.path.exists(sample_path):
+            # Generate sample dynamically if not present
+            try:
+                from generate_sample import generate_sample_pothole_image
+                generate_sample_pothole_image(sample_path)
+            except Exception:
+                pass
+
+        if not os.path.exists(sample_path):
             return jsonify({
                 "success": False,
-                "error": "Sample image not found. Run generate_sample.py first.",
+                "error": "Sample image not found.",
             }), 404
 
         frame = cv2.imread(sample_path)
@@ -241,14 +296,15 @@ def analyze_sample():
         return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
 
 
-@app.route("/api/analyze/3d", methods=["POST"])
+@app.route("/api/analyze/3d", methods=["POST", "OPTIONS"])
 def get_3d_mesh():
     """
     Get 3D surface mesh data for a specific detected pothole.
-
     Expects JSON body: { "detection_index": 0 }
-    Returns: JSON with x, y, z arrays for Plotly Surface plot.
     """
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"}), 200
+
     try:
         data = request.get_json()
         if data is None:
@@ -333,7 +389,7 @@ def get_3d_mesh():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
-    debug = os.environ.get("FLASK_ENV", "development") == "development"
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
 
     print("=" * 60)
     print("  PotholeVision — Flask REST API")
