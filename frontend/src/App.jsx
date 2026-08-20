@@ -1,8 +1,6 @@
 // =============================================================================
-// PotholeVision — Main App Component
+// PotholeVision — Main App Dashboard (Monochrome Edition)
 // =============================================================================
-// Full dashboard: live mobile road camera feed, image uploader,
-// real-time metrics, detection overlays, 3D topography viewer, and audit report.
 
 import { useState, useCallback, useEffect } from 'react';
 import Header from './components/Header';
@@ -14,6 +12,7 @@ import DetectionView from './components/DetectionView';
 import ThreeDViewer from './components/ThreeDViewer';
 import AuditTable from './components/AuditTable';
 import { analyzeImage, analyzeSample, checkHealth } from './api/client';
+import { Camera, Upload, AlertCircle, RefreshCw, Layers, ShieldCheck, Sparkles } from 'lucide-react';
 
 export default function App() {
   // ── Mode: 'camera' (Live Road Vision) or 'upload' (Single Image) ──
@@ -45,7 +44,6 @@ export default function App() {
   }, []);
 
   // ── Handlers ─────────────────────────────────────────────
-
   const handleAnalysisResult = useCallback((data) => {
     if (data.success) {
       setMetrics(data.metrics);
@@ -87,150 +85,152 @@ export default function App() {
     }
   }, [handleAnalysisResult]);
 
-  // ── Render ───────────────────────────────────────────────
-
   const hasResults = metrics && detections && images;
 
   return (
-    <div className="app-layout" id="app">
-      <Header />
+    <div className="min-h-screen bg-black text-zinc-100 bg-grid-pattern flex flex-col selection:bg-white selection:text-black">
+      
+      {/* Tactical HUD Header */}
+      <Header backendOnline={backendOnline} />
 
-      <Sidebar
-        confidence={confidence}
-        onConfidenceChange={setConfidence}
-        showHeatmap={showHeatmap}
-        onToggleHeatmap={() => setShowHeatmap((v) => !v)}
-        showBlueprint={showBlueprint}
-        onToggleBlueprint={() => setShowBlueprint((v) => !v)}
-        onAnalyzeSample={handleAnalyzeSample}
-        isLoading={isLoading}
-      />
+      {/* Main Content Area */}
+      <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col lg:flex-row gap-6 p-4 sm:p-6 lg:p-8">
+        
+        {/* Left Parameter Sidebar */}
+        <Sidebar
+          confidence={confidence}
+          onConfidenceChange={setConfidence}
+          showHeatmap={showHeatmap}
+          onToggleHeatmap={() => setShowHeatmap((v) => !v)}
+          showBlueprint={showBlueprint}
+          onToggleBlueprint={() => setShowBlueprint((v) => !v)}
+          onAnalyzeSample={handleAnalyzeSample}
+          isLoading={isLoading}
+        />
 
-      <main className="app-main" id="main-content">
-        {/* Mode Switcher Tabs */}
-        <div className="mode-tabs">
-          <button
-            className={`mode-tab ${activeMode === 'camera' ? 'active' : ''}`}
-            onClick={() => setActiveMode('camera')}
-          >
-            🎥 Live Road Camera Feed
-          </button>
-          <button
-            className={`mode-tab ${activeMode === 'upload' ? 'active' : ''}`}
-            onClick={() => setActiveMode('upload')}
-          >
-            📁 Upload Image
-          </button>
-        </div>
-
-        {/* Backend offline warning banner if needed */}
-        {backendOnline === false && (
-          <div
-            style={{
-              margin: 'var(--space-sm) 0 var(--space-md)',
-              padding: 'var(--space-sm) var(--space-md)',
-              background: 'rgba(255, 152, 0, 0.12)',
-              border: '1px solid rgba(255, 152, 0, 0.4)',
-              borderRadius: 'var(--radius-md)',
-              color: 'var(--color-warning)',
-              fontSize: '0.82rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-          >
-            <span>
-              ⚠️ Backend is starting or warming up. First request may take ~10-20 seconds.
-            </span>
+        {/* Center Main Dashboard */}
+        <main className="flex-1 space-y-6 min-w-0">
+          
+          {/* Mode Switcher Tabs */}
+          <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-zinc-950/80 p-1.5 backdrop-blur-xl shadow-lg">
             <button
-              className="btn btn-sm"
-              onClick={() => {
-                checkHealth()
-                  .then(() => setBackendOnline(true))
-                  .catch(() => setBackendOnline(false));
-              }}
+              onClick={() => setActiveMode('camera')}
+              className={`flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-xs font-bold font-mono uppercase tracking-wider transition-all cursor-pointer ${
+                activeMode === 'camera'
+                  ? 'bg-white text-black shadow-[0_0_20px_rgba(255,255,255,0.3)]'
+                  : 'text-zinc-400 hover:text-white hover:bg-zinc-900/50'
+              }`}
             >
-              🔄 Retry Connection
+              <Camera className="h-4 w-4" />
+              <span>Live Road Camera Feed</span>
+            </button>
+
+            <button
+              onClick={() => setActiveMode('upload')}
+              className={`flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-xs font-bold font-mono uppercase tracking-wider transition-all cursor-pointer ${
+                activeMode === 'upload'
+                  ? 'bg-white text-black shadow-[0_0_20px_rgba(255,255,255,0.3)]'
+                  : 'text-zinc-400 hover:text-white hover:bg-zinc-900/50'
+              }`}
+            >
+              <Upload className="h-4 w-4" />
+              <span>High-Res Road Image Upload</span>
             </button>
           </div>
-        )}
 
-        {/* Camera or Uploader Component based on Active Mode */}
-        {activeMode === 'camera' ? (
-          <LiveCamera
-            onAnalysisResult={handleAnalysisResult}
-            onError={(errMsg) => setError(errMsg)}
-            isAnalyzingGlobal={isLoading}
-          />
-        ) : (
-          <ImageUploader onUpload={handleUpload} isLoading={isLoading} />
-        )}
+          {/* Backend warming up notice */}
+          {backendOnline === false && (
+            <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/20 bg-zinc-900/80 p-4 text-xs text-zinc-300 backdrop-blur-xl shadow-lg">
+              <div className="flex items-center gap-2.5">
+                <RefreshCw className="h-4 w-4 animate-spin text-white flex-shrink-0" />
+                <span>
+                  <strong>Hugging Face ZeroGPU Backend:</strong> Server may take ~10-20 seconds on initial cold start.
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  checkHealth()
+                    .then(() => setBackendOnline(true))
+                    .catch(() => setBackendOnline(false));
+                }}
+                className="rounded-lg border border-white/20 bg-black px-3 py-1 text-xs font-mono font-bold text-white hover:bg-zinc-800 transition-all cursor-pointer"
+              >
+                Retry Status
+              </button>
+            </div>
+          )}
 
-        {/* Error Banner */}
-        {error && (
-          <div
-            style={{
-              margin: 'var(--space-md) 0',
-              padding: 'var(--space-md) var(--space-lg)',
-              background: 'rgba(244, 67, 54, 0.12)',
-              border: '1px solid rgba(244, 67, 54, 0.35)',
-              borderRadius: 'var(--radius-md)',
-              color: 'var(--color-danger)',
-              fontSize: '0.85rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-            id="error-banner"
-          >
-            <span>⚠️ {error}</span>
-            <button
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--color-danger)',
-                cursor: 'pointer',
-                fontSize: '1rem',
-              }}
-              onClick={() => setError(null)}
-            >
-              ✕
-            </button>
-          </div>
-        )}
+          {/* Error Banner */}
+          {error && (
+            <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/40 bg-zinc-900 p-4 text-xs font-mono text-white shadow-xl">
+              <div className="flex items-center gap-2.5">
+                <AlertCircle className="h-4 w-4 text-white flex-shrink-0" />
+                <span>{error}</span>
+              </div>
+              <button
+                onClick={() => setError(null)}
+                className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
-        {/* Results */}
-        {hasResults && (
-          <>
-            {/* Metrics Bar */}
-            <MetricsPanel metrics={metrics} />
-
-            {/* Detection Images */}
-            <DetectionView
-              images={images}
-              showHeatmap={showHeatmap}
-              showBlueprint={showBlueprint}
+          {/* Camera or Uploader Component based on Active Mode */}
+          {activeMode === 'camera' ? (
+            <LiveCamera
+              onAnalysisResult={handleAnalysisResult}
+              onError={(errMsg) => setError(errMsg)}
+              isAnalyzingGlobal={isLoading}
             />
+          ) : (
+            <ImageUploader onUpload={handleUpload} isLoading={isLoading} />
+          )}
 
-            {/* 3D Viewer */}
-            <ThreeDViewer detections={detections} />
+          {/* Results Sections */}
+          {hasResults && (
+            <div className="space-y-6 pt-2">
+              
+              {/* 1. HUD Telemetry Metrics Panel */}
+              <MetricsPanel metrics={metrics} />
 
-            {/* Audit Table */}
-            <AuditTable detections={detections} />
-          </>
-        )}
+              {/* 2. Visual Overlays (Annotated, CAD Blueprint, Heatmap) */}
+              <DetectionView
+                images={images}
+                showHeatmap={showHeatmap}
+                showBlueprint={showBlueprint}
+              />
 
-        {/* Empty state when no results & upload mode */}
-        {!hasResults && !isLoading && !error && activeMode === 'upload' && (
-          <div className="empty-state" style={{ marginTop: 'var(--space-2xl)' }}>
-            <div className="empty-state-icon">🕳️</div>
-            <p className="empty-state-text">
-              Upload a road image or click <strong>"Analyze Sample Image"</strong> in
-              the sidebar to start pothole detection and depth analysis.
-            </p>
-          </div>
-        )}
-      </main>
+              {/* 3. Interactive 3D Surface Topography */}
+              <ThreeDViewer detections={detections} />
+
+              {/* 4. Structured Defect Audit Table */}
+              <AuditTable detections={detections} />
+
+            </div>
+          )}
+
+          {/* Empty state when no results & upload mode */}
+          {!hasResults && !isLoading && !error && activeMode === 'upload' && (
+            <div className="flex min-h-[180px] flex-col items-center justify-center rounded-3xl border border-white/10 bg-zinc-950/60 p-8 text-center backdrop-blur-xl">
+              <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-zinc-900">
+                <Layers className="h-6 w-6 text-white" />
+              </div>
+              <p className="text-xs text-zinc-400 max-w-sm">
+                Upload a road photograph or click <strong className="text-white">"Test Sample Road Image"</strong> in the sidebar to view automated pothole segmentation and 3D depth maps.
+              </p>
+            </div>
+          )}
+
+        </main>
+
+      </div>
+
+      {/* Footer */}
+      <footer className="mt-auto border-t border-white/10 bg-black/90 py-4 text-center text-[11px] font-mono text-zinc-500">
+        <span>POTHOLEVISION AI &copy; 2026 &mdash; MONOCULAR DEPTH ESTIMATION &amp; INFRASTRUCTURE AUDIT</span>
+      </footer>
+
     </div>
   );
 }
