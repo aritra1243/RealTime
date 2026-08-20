@@ -5,7 +5,7 @@
 #   - GET/POST /api/health
 #   - POST     /api/analyze (multipart image file OR base64 JSON payload for live camera)
 #   - POST     /api/analyze/3d (3D surface mesh topography)
-#   - GET/POST /api/sample (built-in sample road image)
+#   - GET      /api/sample (built-in sample road image)
 
 import base64
 import io
@@ -232,31 +232,21 @@ with gr.Blocks(title="PotholeVision AI") as demo:
             output_img = gr.Image(label="Annotated Detection & Depth Map")
             output_txt = gr.Textbox(label="Audit Metrics", lines=6)
 
-    btn.click(fn=gradio_predict, inputs=input_img, outputs=[output_img, output_txt])
+    btn.click(fn=gradio_predict, inputs=input_img, outputs=[output_img, output_txt], api_name="predict")
 
 
-# ─── Attach REST API Routes to demo.app ──────────────────────────────────────
-
-demo.app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ─── Route Handler Functions ─────────────────────────────────────────────────
 
 
-@demo.app.api_route("/api/health", methods=["GET", "POST", "OPTIONS"])
 async def health_check():
     """Health check endpoint."""
-    return {
+    return JSONResponse(content={
         "status": "ok",
         "service": "PotholeVision API",
         "version": "2.0.0",
-    }
+    })
 
 
-@demo.app.api_route("/api/analyze", methods=["POST", "OPTIONS"])
 async def analyze_image(request: Request):
     """
     Analyze image from multipart form data or base64 JSON payload.
@@ -309,7 +299,6 @@ async def analyze_image(request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-@demo.app.api_route("/api/sample", methods=["GET", "POST", "OPTIONS"])
 async def analyze_sample():
     """Analyze built-in sample image."""
     try:
@@ -336,7 +325,6 @@ async def analyze_sample():
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-@demo.app.api_route("/api/analyze/3d", methods=["POST", "OPTIONS"])
 async def get_3d_mesh(request: Request):
     """Get 3D surface mesh data for a specific detection."""
     if request.method == "OPTIONS":
@@ -404,6 +392,21 @@ async def get_3d_mesh(request: Request):
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
+
+# ─── Direct Route Table Registration on demo.app ─────────────────────────────
+
+demo.app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+demo.app.router.add_api_route("/api/health", health_check, methods=["GET", "POST", "OPTIONS"])
+demo.app.router.add_api_route("/api/analyze", analyze_image, methods=["POST", "OPTIONS"])
+demo.app.router.add_api_route("/api/sample", analyze_sample, methods=["GET", "OPTIONS"])
+demo.app.router.add_api_route("/api/analyze/3d", get_3d_mesh, methods=["POST", "OPTIONS"])
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
 
