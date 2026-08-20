@@ -19,7 +19,8 @@ plotly>=5.18.0
 pandas>=2.0.0
 pyyaml>=6.0
 
-# Web API
+# Web API & UI
 flask>=3.0.0
 flask-cors>=4.0.0
 gunicorn>=21.0.0
+gradio>=4.0.0
