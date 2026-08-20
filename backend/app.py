@@ -1,11 +1,7 @@
 # =============================================================================
 # PotholeVision — Gradio 5 + FastAPI Unified Backend
 # =============================================================================
-# Native Hugging Face Spaces & ZeroGPU support + full REST API endpoints:
-#   - GET/POST /api/health
-#   - POST     /api/analyze (multipart image file OR base64 JSON payload for live camera)
-#   - POST     /api/analyze/3d (3D surface mesh topography)
-#   - GET/POST /api/sample (built-in sample road image)
+# Native Hugging Face Spaces & ZeroGPU support + full REST API endpoints
 
 import base64
 import io
@@ -17,10 +13,10 @@ import traceback
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, Request
+import gradio as gr
+from fastapi import Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import gradio as gr
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -190,148 +186,64 @@ def run_pipeline(frame: np.ndarray) -> dict:
     return _execute_pipeline(frame)
 
 
-# ─── Gradio Interactive Web UI ───────────────────────────────────────────────
+# ─── Gradio Predict Function ─────────────────────────────────────────────────
 
 
-def gradio_predict(img):
-    """Handler for Hugging Face embedded Gradio interface."""
-    if img is None:
-        return None, "Please upload or capture a road image."
+def gradio_predict_json(image_input):
+    """
+    Primary JSON-returning prediction function for both Gradio UI and REST clients.
+    Accepts:
+      - numpy ndarray (from Gradio UI)
+      - string (base64 or data URL from REST/frontend)
+    Returns: JSON string with full detection metrics, coordinates, and base64 images.
+    """
+    if image_input is None:
+        return json.dumps({"success": False, "error": "No image provided."})
 
-    bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    res = run_pipeline(bgr)
-
-    ann_b64 = res["images"]["annotated"]
-    ann_bytes = base64.b64decode(ann_b64)
-    ann_bgr = cv2.imdecode(np.frombuffer(ann_bytes, np.uint8), cv2.IMREAD_COLOR)
-    ann_rgb = cv2.cvtColor(ann_bgr, cv2.COLOR_BGR2RGB)
-
-    metrics = res["metrics"]
-    summary = (
-        f"Road Status: {metrics['road_status']}\n"
-        f"Potholes Detected: {metrics['pothole_count']}\n"
-        f"Max Depth: {metrics['max_depth']:.4f}\n"
-        f"Total Volume: {metrics['total_volume']:.1f}\n"
-        f"Latency: {metrics['latency_ms']:.1f} ms"
-    )
-    return ann_rgb, summary
-
-
-with gr.Blocks(title="PotholeVision AI") as demo:
-    gr.Markdown("# PotholeVision — Real-Time Road Defect & Depth Analysis")
-    gr.Markdown(
-        "AI-powered monocular depth estimation, YOLOv8 segmentation, and 3D surface topography.\n\n"
-        "**REST API active for React / Vercel frontend.**"
-    )
-    with gr.Row():
-        with gr.Column():
-            input_img = gr.Image(type="numpy", label="Road Image / Camera Feed")
-            btn = gr.Button("Analyze Road Defect", variant="primary")
-        with gr.Column():
-            output_img = gr.Image(label="Annotated Detection & Depth Map")
-            output_txt = gr.Textbox(label="Audit Metrics", lines=6)
-
-    btn.click(fn=gradio_predict, inputs=input_img, outputs=[output_img, output_txt], api_name="analyze_road")
-
-
-# ─── FastAPI Handlers for Custom REST Endpoints ──────────────────────────────
-
-
-async def health_handler(request: Request):
-    return JSONResponse(content={
-        "status": "ok",
-        "service": "PotholeVision API",
-        "version": "2.0.0",
-    })
-
-
-async def analyze_handler(request: Request):
     try:
-        content_type = request.headers.get("content-type", "")
-
-        # 1. Check if multipart form data
-        if "multipart/form-data" in content_type:
-            form = await request.form()
-            file = form.get("image")
-            if not file:
-                return JSONResponse(status_code=400, content={"success": False, "error": "No 'image' file provided."})
-            file_bytes = await file.read()
-            frame = decode_image_bytes(file_bytes)
-
-        # 2. Check if JSON payload (base64 webcam frame)
-        elif "application/json" in content_type:
-            body = await request.json()
-            if not body or "image" not in body:
-                return JSONResponse(status_code=400, content={"success": False, "error": "No 'image' in JSON payload."})
-            frame = decode_image_base64_str(body["image"])
-
+        if isinstance(image_input, str):
+            frame = decode_image_base64_str(image_input)
+        elif isinstance(image_input, np.ndarray):
+            frame = cv2.cvtColor(image_input, cv2.COLOR_RGB2BGR)
         else:
-            body_bytes = await request.body()
-            if body_bytes:
-                try:
-                    data = json.loads(body_bytes.decode("utf-8"))
-                    if "image" in data:
-                        frame = decode_image_base64_str(data["image"])
-                    else:
-                        frame = decode_image_bytes(body_bytes)
-                except Exception:
-                    frame = decode_image_bytes(body_bytes)
-            else:
-                return JSONResponse(status_code=400, content={"success": False, "error": "Empty request."})
+            return json.dumps({"success": False, "error": "Unsupported image format."})
 
         result = run_pipeline(frame)
-        return JSONResponse(content=result)
-
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"success": False, "error": str(e)})
+        return json.dumps(result)
     except Exception as e:
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
+        return json.dumps({"success": False, "error": str(e)})
 
 
-async def sample_handler(request: Request):
+def gradio_predict_sample():
+    """Analyze built-in sample image."""
     try:
         sample_path = os.path.join(config.ASSETS_DIR, "sample_pothole.jpg")
         if not os.path.exists(sample_path):
-            try:
-                from generate_sample import generate_sample_pothole_image
-                generate_sample_pothole_image(sample_path)
-            except Exception:
-                pass
-
-        if not os.path.exists(sample_path):
-            return JSONResponse(status_code=404, content={"success": False, "error": "Sample image not found."})
-
+            from generate_sample import generate_sample_pothole_image
+            generate_sample_pothole_image(sample_path)
         frame = cv2.imread(sample_path)
-        if frame is None:
-            return JSONResponse(status_code=500, content={"success": False, "error": "Could not read sample image."})
-
         result = run_pipeline(frame)
-        return JSONResponse(content=result)
-
+        return json.dumps(result)
     except Exception as e:
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
+        return json.dumps({"success": False, "error": str(e)})
 
 
-async def analyze_3d_handler(request: Request):
+def gradio_predict_3d(det_index_str):
+    """Get 3D mesh for detection index."""
     try:
-        data = await request.json()
-        det_index = data.get("detection_index", 0)
-
+        det_index = int(det_index_str) if det_index_str else 0
         detections = _models.get("_last_detections", [])
         depth_map = _models.get("_last_depth_map", None)
 
         if not detections or depth_map is None:
-            return JSONResponse(status_code=400, content={"success": False, "error": "No analysis results. Call /api/analyze first."})
+            return json.dumps({"success": False, "error": "No detections found."})
 
         if det_index < 0 or det_index >= len(detections):
-            return JSONResponse(status_code=400, content={"success": False, "error": "Invalid detection index."})
+            return json.dumps({"success": False, "error": "Invalid index."})
 
         det = detections[det_index]
-        if det.mask is None or depth_map is None:
-            return JSONResponse(status_code=400, content={"success": False, "error": "No mask or depth data."})
-
         x1, y1, x2, y2 = det.bbox
         x1 = max(0, x1)
         y1 = max(0, y1)
@@ -340,9 +252,6 @@ async def analyze_3d_handler(request: Request):
 
         region_depth = depth_map[y1:y2, x1:x2].copy()
         region_mask = det.mask[y1:y2, x1:x2]
-
-        if region_depth.size == 0:
-            return JSONResponse(status_code=400, content={"success": False, "error": "Empty region."})
 
         ref_depth = float(np.median(region_depth))
         z_vals = -(region_depth - ref_depth)
@@ -355,15 +264,11 @@ async def analyze_3d_handler(request: Request):
         y_arr = (np.arange(z_down.shape[0]) * config.REAL_WORLD_SCALE * step).tolist()
         z_arr = z_down.tolist()
 
-        return JSONResponse(content={
+        return json.dumps({
             "success": True,
             "detection_index": det_index,
             "severity": det.severity,
-            "surface": {
-                "x": x_arr,
-                "y": y_arr,
-                "z": z_arr,
-            },
+            "surface": {"x": x_arr, "y": y_arr, "z": z_arr},
             "metadata": {
                 "max_depth": round(det.max_depth, 4),
                 "dimensions": {
@@ -372,10 +277,35 @@ async def analyze_3d_handler(request: Request):
                 },
             },
         })
-
     except Exception as e:
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
+        return json.dumps({"success": False, "error": str(e)})
+
+
+# ─── Gradio UI Interface ─────────────────────────────────────────────────────
+
+with gr.Blocks(title="PotholeVision AI") as demo:
+    gr.Markdown("# PotholeVision — Real-Time Road Defect & Depth Analysis")
+    gr.Markdown("ZeroGPU Accelerated Monocular Depth Estimation & Autonomous Road Defect AI.")
+
+    with gr.Row():
+        with gr.Column():
+            input_text = gr.Textbox(label="Image Data URL / Base64 / File", placeholder="data:image/jpeg;base64,...")
+            analyze_btn = gr.Button("Analyze Road Image", variant="primary")
+        with gr.Column():
+            output_json = gr.JSON(label="Analysis Results (JSON)")
+
+    sample_btn = gr.Button("Run Sample Analysis")
+    sample_output = gr.JSON(label="Sample Results")
+
+    det_idx_input = gr.Textbox(label="Defect Index", value="0")
+    mesh_3d_btn = gr.Button("Get 3D Surface Mesh")
+    mesh_3d_output = gr.JSON(label="3D Mesh Data")
+
+    # Register named APIs for direct frontend access:
+    analyze_btn.click(fn=gradio_predict_json, inputs=input_text, outputs=output_json, api_name="analyze")
+    sample_btn.click(fn=gradio_predict_sample, inputs=[], outputs=sample_output, api_name="sample")
+    mesh_3d_btn.click(fn=gradio_predict_3d, inputs=det_idx_input, outputs=mesh_3d_output, api_name="analyze_3d")
 
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
@@ -386,24 +316,4 @@ if __name__ == "__main__":
     print("  PotholeVision — Launching Server on port", port)
     print("=" * 60)
 
-    # 1. Launch Gradio with non-blocking thread so we can register custom routes on live app
-    demo.launch(server_name="0.0.0.0", server_port=port, prevent_thread_lock=True)
-
-    # 2. Add CORS middleware & custom routes directly to demo.app.router
-    demo.app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    demo.app.add_api_route("/api/health", health_handler, methods=["GET", "POST", "OPTIONS"])
-    demo.app.add_api_route("/api/analyze", analyze_handler, methods=["POST", "OPTIONS"])
-    demo.app.add_api_route("/api/sample", sample_handler, methods=["GET", "POST", "OPTIONS"])
-    demo.app.add_api_route("/api/analyze/3d", analyze_3d_handler, methods=["POST", "OPTIONS"])
-
-    print("[API] All REST routes (/api/health, /api/analyze, /api/sample, /api/analyze/3d) registered on live server.")
-
-    # 3. Keep main thread alive
-    demo.block_thread()
+    demo.launch(server_name="0.0.0.0", server_port=port)
