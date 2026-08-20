@@ -1,10 +1,11 @@
 # =============================================================================
-# PotholeVision — Unified FastAPI + Gradio Backend
+# PotholeVision — Gradio 5 + FastAPI Unified Backend
 # =============================================================================
-# Architecture:
-#   - Root ASGI Server: FastAPI (Handles all REST API endpoints + CORS)
-#   - Mounted UI: Gradio 5 (Mounted on root '/' for interactive web demo)
-#   - Compatible with Hugging Face ZeroGPU and Vercel React Frontend
+# Native Hugging Face Spaces & ZeroGPU support + full REST API endpoints:
+#   - GET  /api/health
+#   - POST /api/analyze (multipart image file OR base64 JSON payload for live camera)
+#   - POST /api/analyze/3d (3D surface mesh topography)
+#   - GET  /api/sample (built-in sample road image)
 
 import base64
 import io
@@ -17,10 +18,9 @@ import traceback
 import cv2
 import numpy as np
 import gradio as gr
-from fastapi import FastAPI, Request
+from fastapi import Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -61,11 +61,11 @@ def get_models():
         _models["analyzer"] = PotholeAnalyzer()
         _models["overlay"] = Overlay()
         _models["blueprint"] = BlueprintRenderer()
-        print("[API] All models loaded successfully.")
+        print("[API] All models loaded.")
     return _models
 
 
-# ─── Image Helpers ───────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
 
 def encode_image_base64(img: np.ndarray, quality: int = 85) -> str:
@@ -80,7 +80,7 @@ def decode_image_bytes(file_bytes: bytes) -> np.ndarray:
     nparr = np.frombuffer(file_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
-        raise ValueError("Could not decode image bytes.")
+        raise ValueError("Could not decode image data.")
     return img
 
 
@@ -191,12 +191,55 @@ def run_pipeline(frame: np.ndarray) -> dict:
     return _execute_pipeline(frame)
 
 
-# ─── FastAPI Application (REST API) ──────────────────────────────────────────
+# ─── Gradio Interactive Web UI ───────────────────────────────────────────────
 
-app = FastAPI(title="PotholeVision API", version="2.0.0")
 
-# CORS middleware
-app.add_middleware(
+def gradio_predict(img):
+    """Handler for Hugging Face embedded Gradio interface."""
+    if img is None:
+        return None, "Please upload or capture a road image."
+
+    # Convert RGB from Gradio to BGR for OpenCV
+    bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    res = run_pipeline(bgr)
+
+    # Decode annotated output back to RGB for display
+    ann_b64 = res["images"]["annotated"]
+    ann_bytes = base64.b64decode(ann_b64)
+    ann_bgr = cv2.imdecode(np.frombuffer(ann_bytes, np.uint8), cv2.IMREAD_COLOR)
+    ann_rgb = cv2.cvtColor(ann_bgr, cv2.COLOR_BGR2RGB)
+
+    metrics = res["metrics"]
+    summary = (
+        f"🛣️ Road Status: {metrics['road_status']}\n"
+        f"🕳️ Potholes Detected: {metrics['pothole_count']}\n"
+        f"📏 Max Depth: {metrics['max_depth']:.4f}\n"
+        f"📦 Total Volume: {metrics['total_volume']:.1f}\n"
+        f"⚡ Latency: {metrics['latency_ms']:.1f} ms"
+    )
+    return ann_rgb, summary
+
+
+with gr.Blocks(title="PotholeVision AI") as demo:
+    gr.Markdown("# 🕳️ PotholeVision — Real-Time Road Defect & Depth Analysis")
+    gr.Markdown(
+        "AI-powered monocular depth estimation, YOLOv8 segmentation, and 3D surface topography.\n\n"
+        "**⚡ REST API is active at `/api/analyze`, `/api/health`, and `/api/analyze/3d` for the React/Vercel frontend.**"
+    )
+    with gr.Row():
+        with gr.Column():
+            input_img = gr.Image(type="numpy", label="Road Image / Camera Feed")
+            btn = gr.Button("🔍 Analyze Road Defect", variant="primary")
+        with gr.Column():
+            output_img = gr.Image(label="Annotated Detection & Depth Map")
+            output_txt = gr.Textbox(label="Audit Metrics", lines=6)
+
+    btn.click(fn=gradio_predict, inputs=input_img, outputs=[output_img, output_txt])
+
+
+# ─── REST API Route Handlers (FastAPI on demo.app) ───────────────────────────
+
+demo.app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
@@ -205,7 +248,7 @@ app.add_middleware(
 )
 
 
-@app.get("/api/health")
+@demo.app.get("/api/health")
 async def health_check():
     """Health check endpoint."""
     return {
@@ -215,7 +258,7 @@ async def health_check():
     }
 
 
-@app.post("/api/analyze")
+@demo.app.post("/api/analyze")
 async def analyze_image(request: Request):
     """
     Analyze image from multipart form data or base64 JSON payload.
@@ -265,7 +308,7 @@ async def analyze_image(request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-@app.get("/api/sample")
+@demo.app.get("/api/sample")
 async def analyze_sample():
     """Analyze built-in sample image."""
     try:
@@ -292,7 +335,7 @@ async def analyze_sample():
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-@app.post("/api/analyze/3d")
+@demo.app.post("/api/analyze/3d")
 async def get_3d_mesh(request: Request):
     """Get 3D surface mesh data for a specific detection."""
     try:
@@ -358,60 +401,17 @@ async def get_3d_mesh(request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-# ─── Gradio Interactive Web UI ───────────────────────────────────────────────
-
-
-def gradio_predict(img):
-    """Handler for Hugging Face embedded Gradio interface."""
-    if img is None:
-        return None, "Please upload or capture a road image."
-
-    bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    res = run_pipeline(bgr)
-
-    ann_b64 = res["images"]["annotated"]
-    ann_bytes = base64.b64decode(ann_b64)
-    ann_bgr = cv2.imdecode(np.frombuffer(ann_bytes, np.uint8), cv2.IMREAD_COLOR)
-    ann_rgb = cv2.cvtColor(ann_bgr, cv2.COLOR_BGR2RGB)
-
-    metrics = res["metrics"]
-    summary = (
-        f"🛣️ Road Status: {metrics['road_status']}\n"
-        f"🕳️ Potholes Detected: {metrics['pothole_count']}\n"
-        f"📏 Max Depth: {metrics['max_depth']:.4f}\n"
-        f"📦 Total Volume: {metrics['total_volume']:.1f}\n"
-        f"⚡ Latency: {metrics['latency_ms']:.1f} ms"
-    )
-    return ann_rgb, summary
-
-
-with gr.Blocks(title="PotholeVision AI") as demo:
-    gr.Markdown("# 🕳️ PotholeVision — Real-Time Road Defect & Depth Analysis")
-    gr.Markdown(
-        "AI-powered monocular depth estimation, YOLOv8 segmentation, and 3D surface topography.\n\n"
-        "**⚡ REST API is active at `/api/analyze`, `/api/health`, and `/api/analyze/3d` for the React/Vercel frontend.**"
-    )
-    with gr.Row():
-        with gr.Column():
-            input_img = gr.Image(type="numpy", label="Road Image / Camera Feed")
-            btn = gr.Button("🔍 Analyze Road Defect", variant="primary")
-        with gr.Column():
-            output_img = gr.Image(label="Annotated Detection & Depth Map")
-            output_txt = gr.Textbox(label="Audit Metrics", lines=6)
-
-    btn.click(fn=gradio_predict, inputs=input_img, outputs=[output_img, output_txt])
-
-
-# Mount Gradio onto the root FastAPI application cleanly
-app = gr.mount_gradio_app(app, demo, path="/")
-
 # ─── Entry Point ─────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 7860))
-    print("=" * 60)
-    print("  PotholeVision — FastAPI + Gradio Unified Server")
-    print(f"  Running on http://0.0.0.0:{port}")
-    print("=" * 60)
+port = int(os.environ.get("PORT", 7860))
+print("=" * 60)
+print("  PotholeVision — Launching Server")
+print(f"  Port: {port}")
+print("=" * 60)
 
-    uvicorn.run(app, host="0.0.0.0", port=port)
+demo.launch(
+    server_name="0.0.0.0",
+    server_port=port,
+    show_api=False,
+    ssr=False,
+)
