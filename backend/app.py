@@ -2,10 +2,10 @@
 # PotholeVision — Gradio 5 + FastAPI Unified Backend
 # =============================================================================
 # Native Hugging Face Spaces & ZeroGPU support + full REST API endpoints:
-#   - GET/POST /api/health
-#   - POST     /api/analyze (multipart image file OR base64 JSON payload for live camera)
-#   - POST     /api/analyze/3d (3D surface mesh topography)
-#   - GET      /api/sample (built-in sample road image)
+#   - GET  /api/health
+#   - POST /api/analyze (multipart image file OR base64 JSON payload for live camera)
+#   - POST /api/analyze/3d (3D surface mesh topography)
+#   - GET  /api/sample (built-in sample road image)
 
 import base64
 import io
@@ -18,7 +18,7 @@ import traceback
 import cv2
 import numpy as np
 import gradio as gr
-from fastapi import Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -232,29 +232,39 @@ with gr.Blocks(title="PotholeVision AI") as demo:
             output_img = gr.Image(label="Annotated Detection & Depth Map")
             output_txt = gr.Textbox(label="Audit Metrics", lines=6)
 
-    btn.click(fn=gradio_predict, inputs=input_img, outputs=[output_img, output_txt], api_name="predict")
+    btn.click(fn=gradio_predict, inputs=input_img, outputs=[output_img, output_txt])
 
 
-# ─── Route Handler Functions ─────────────────────────────────────────────────
+# ─── FastAPI Sub-Application for REST Endpoints ──────────────────────────────
+
+api_app = FastAPI(title="PotholeVision API", version="2.0.0")
+
+api_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
+@api_app.get("/health")
+@api_app.post("/health")
 async def health_check():
-    """Health check endpoint."""
-    return JSONResponse(content={
+    """Health check endpoint at /api/health."""
+    return {
         "status": "ok",
         "service": "PotholeVision API",
         "version": "2.0.0",
-    })
+    }
 
 
+@api_app.post("/analyze")
 async def analyze_image(request: Request):
     """
     Analyze image from multipart form data or base64 JSON payload.
-    Supports real-time live camera streaming and file uploads.
+    Supports real-time live camera streaming and file uploads at /api/analyze.
     """
-    if request.method == "OPTIONS":
-        return JSONResponse(content={"status": "ok"})
-
     try:
         content_type = request.headers.get("content-type", "")
 
@@ -299,8 +309,10 @@ async def analyze_image(request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
+@api_app.get("/sample")
+@api_app.post("/sample")
 async def analyze_sample():
-    """Analyze built-in sample image."""
+    """Analyze built-in sample image at /api/sample."""
     try:
         sample_path = os.path.join(config.ASSETS_DIR, "sample_pothole.jpg")
         if not os.path.exists(sample_path):
@@ -325,11 +337,9 @@ async def analyze_sample():
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
+@api_app.post("/analyze/3d")
 async def get_3d_mesh(request: Request):
-    """Get 3D surface mesh data for a specific detection."""
-    if request.method == "OPTIONS":
-        return JSONResponse(content={"status": "ok"})
-
+    """Get 3D surface mesh data for a specific detection at /api/analyze/3d."""
     try:
         data = await request.json()
         det_index = data.get("detection_index", 0)
@@ -393,7 +403,7 @@ async def get_3d_mesh(request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-# ─── Direct Route Table Registration on demo.app ─────────────────────────────
+# ─── Mount FastAPI Sub-App onto demo.app at /api ─────────────────────────────
 
 demo.app.add_middleware(
     CORSMiddleware,
@@ -403,10 +413,7 @@ demo.app.add_middleware(
     allow_headers=["*"],
 )
 
-demo.app.router.add_api_route("/api/health", health_check, methods=["GET", "POST", "OPTIONS"])
-demo.app.router.add_api_route("/api/analyze", analyze_image, methods=["POST", "OPTIONS"])
-demo.app.router.add_api_route("/api/sample", analyze_sample, methods=["GET", "OPTIONS"])
-demo.app.router.add_api_route("/api/analyze/3d", get_3d_mesh, methods=["POST", "OPTIONS"])
+demo.app.mount("/api", api_app)
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
 
