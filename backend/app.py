@@ -1,7 +1,9 @@
 # =============================================================================
-# PotholeVision — High-Performance Gradio 5 Unlimited Backend
+# PotholeVision — Gradio 5 Unified Backend
 # =============================================================================
-# Direct high-speed inference without ZeroGPU rate-limiting or quota caps.
+# Hybrid CPU/GPU Architecture:
+# - Real-time live camera streams on CPU directly (0 quota usage, unlimited 24/7)
+# - Deep Blueprint/Snapshot analysis uses GPU acceleration
 
 import base64
 import io
@@ -24,6 +26,20 @@ from depth.estimator import DepthEstimator
 from analysis.pothole_analyzer import PotholeAnalyzer
 from visualization.overlay import Overlay
 from visualization.blueprint import BlueprintRenderer
+
+# ─── Hugging Face ZeroGPU Support ────────────────────────────────────────────
+try:
+    import spaces
+
+    def gpu_decorate(func):
+        return spaces.GPU(duration=30)(func)
+
+    print("[API] Hugging Face ZeroGPU support enabled.")
+except Exception:
+    def gpu_decorate(func):
+        return func
+
+    print("[API] Running in standard CPU/GPU mode.")
 
 # ─── Lazy-loaded ML Models ──────────────────────────────────────────────────
 
@@ -94,8 +110,8 @@ def detection_to_dict(det: Detection, index: int) -> dict:
     }
 
 
-def run_pipeline(frame: np.ndarray, is_fast_stream: bool = False) -> dict:
-    """Run detection, depth estimation, and blueprint rendering with zero quota limits."""
+def _execute_pipeline(frame: np.ndarray, is_fast_stream: bool = False) -> dict:
+    """Run detection, depth estimation, and blueprint rendering."""
     models = get_models()
     detector = models["detector"]
     depth_estimator = models["depth_estimator"]
@@ -105,7 +121,7 @@ def run_pipeline(frame: np.ndarray, is_fast_stream: bool = False) -> dict:
 
     start_time = time.time()
 
-    # Fast stream dimension optimization (maintains high real-time FPS)
+    # Fast stream dimension optimization
     if is_fast_stream and max(frame.shape[:2]) > 640:
         scale = 640.0 / max(frame.shape[:2])
         frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
@@ -170,11 +186,22 @@ def run_pipeline(frame: np.ndarray, is_fast_stream: bool = False) -> dict:
     }
 
 
+# GPU accelerated full pipeline
+@gpu_decorate
+def run_pipeline_gpu(frame: np.ndarray) -> dict:
+    return _execute_pipeline(frame, is_fast_stream=False)
+
+
+# Pure CPU fast pipeline for live real-time camera (zero quota consumption)
+def run_pipeline_fast(frame: np.ndarray) -> dict:
+    return _execute_pipeline(frame, is_fast_stream=True)
+
+
 # ─── Gradio Predict Functions ────────────────────────────────────────────────
 
 
 def gradio_predict_json(image_input):
-    """Full-fidelity analysis (for uploads and snapshots)."""
+    """Full-fidelity analysis for uploads and snapshots."""
     if image_input is None:
         return json.dumps({"success": False, "error": "No image provided."})
     try:
@@ -185,7 +212,13 @@ def gradio_predict_json(image_input):
         else:
             return json.dumps({"success": False, "error": "Unsupported image format."})
 
-        result = run_pipeline(frame, is_fast_stream=False)
+        # Try GPU first, gracefully fall back to CPU if quota exceeded
+        try:
+            result = run_pipeline_gpu(frame)
+        except Exception as e:
+            print(f"[API] GPU Notice ({e}), running high-speed CPU pipeline.")
+            result = _execute_pipeline(frame, is_fast_stream=False)
+
         return json.dumps(result)
     except Exception as e:
         traceback.print_exc()
@@ -193,7 +226,7 @@ def gradio_predict_json(image_input):
 
 
 def gradio_predict_fast(image_input):
-    """High-speed real-time live camera analysis with zero quota restrictions."""
+    """High-speed real-time live camera analysis (runs on CPU with 0 quota limit)."""
     if image_input is None:
         return json.dumps({"success": False, "error": "No image provided."})
     try:
@@ -204,7 +237,8 @@ def gradio_predict_fast(image_input):
         else:
             return json.dumps({"success": False, "error": "Unsupported image format."})
 
-        result = run_pipeline(frame, is_fast_stream=True)
+        # Directly run on CPU with zero quota usage
+        result = run_pipeline_fast(frame)
         return json.dumps(result)
     except Exception as e:
         traceback.print_exc()
@@ -219,7 +253,7 @@ def gradio_predict_sample():
             from generate_sample import generate_sample_pothole_image
             generate_sample_pothole_image(sample_path)
         frame = cv2.imread(sample_path)
-        result = run_pipeline(frame, is_fast_stream=False)
+        result = _execute_pipeline(frame, is_fast_stream=False)
         return json.dumps(result)
     except Exception as e:
         traceback.print_exc()
@@ -282,7 +316,7 @@ def gradio_predict_3d(det_index_str):
 
 with gr.Blocks(title="PotholeVision AI") as demo:
     gr.Markdown("# PotholeVision — Real-Time Road Defect & Depth Analysis")
-    gr.Markdown("Unlimited Real-Time Monocular Depth Estimation & Autonomous Road Defect AI.")
+    gr.Markdown("ZeroGPU + High-Speed Monocular Depth Estimation & Autonomous Road Defect AI.")
 
     with gr.Row():
         with gr.Column():
