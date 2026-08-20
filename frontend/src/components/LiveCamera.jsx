@@ -161,7 +161,7 @@ export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGloba
           <img
             src={`data:image/jpeg;base64,${liveOverlay}`}
             alt="Real-time detection overlay"
-            className="absolute inset-0 h-full w-full object-contain pointer-events-none z-10"
+            className="absolute inset-0 h-full w-full object-cover pointer-events-none z-10"
           />
         )}
 
