@@ -1,24 +1,29 @@
 // =============================================================================
-// PotholeVision — Monochrome Live Tactical Road Camera
+// PotholeVision — Ultra-Smooth Real-Time Tactical Road Vision Camera (60 FPS HUD)
 // =============================================================================
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, RefreshCw, Play, Pause, AlertTriangle, Eye, VideoOff, Crosshair } from 'lucide-react';
-import { analyzeFrame } from '../api/client';
+import { Camera, RefreshCw, Play, Pause, AlertTriangle, Eye, VideoOff, Crosshair, Zap } from 'lucide-react';
+import { analyzeFrameFast, analyzeFrame } from '../api/client';
 
 export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGlobal }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const hudCanvasRef = useRef(null);
+
   const [stream, setStream] = useState(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isLiveAnalyzing, setIsLiveAnalyzing] = useState(false);
   const [facingMode, setFacingMode] = useState('environment');
-  const [liveOverlay, setLiveOverlay] = useState(null);
   const [liveMetrics, setLiveMetrics] = useState(null);
   const [fps, setFps] = useState(0);
+  const [aiLatency, setAiLatency] = useState(0);
 
-  const isProcessingRef = useRef(false);
-  const timerRef = useRef(null);
+  const isStreamingRef = useRef(false);
+  const abortControllerRef = useRef(null);
+  const detectionsRef = useRef([]);
+  const frameCountRef = useRef(0);
+  const lastFpsTimeRef = useRef(Date.now());
 
   // ── Start Camera ──────────────────────────────────────────────────────────
   const startCamera = useCallback(async (facing = facingMode) => {
@@ -52,8 +57,11 @@ export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGloba
 
   // ── Stop Camera ───────────────────────────────────────────────────────────
   const stopCamera = useCallback(() => {
+    isStreamingRef.current = false;
     setIsLiveAnalyzing(false);
-    if (timerRef.current) clearInterval(timerRef.current);
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
 
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
@@ -63,7 +71,7 @@ export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGloba
       videoRef.current.srcObject = null;
     }
     setIsCameraActive(false);
-    setLiveOverlay(null);
+    detectionsRef.current = [];
   }, [stream]);
 
   // ── Flip Facing ───────────────────────────────────────────────────────────
@@ -72,55 +80,215 @@ export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGloba
     startCamera(nextFacing);
   }, [facingMode, startCamera]);
 
-  // ── Capture & Process Frame ───────────────────────────────────────────────
-  const captureAndAnalyze = useCallback(async () => {
-    if (!videoRef.current || !canvasRef.current || isProcessingRef.current) return;
+  // ── High-Speed AI Streaming Loop ──────────────────────────────────────────
+  const runAiStreamingLoop = useCallback(async () => {
+    if (!isStreamingRef.current) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState !== 4) {
+      if (isStreamingRef.current) {
+        requestAnimationFrame(() => runAiStreamingLoop());
+      }
+      return;
+    }
+
+    // Downscale for ultra-fast AI inference (480x270 standard 16:9)
+    canvas.width = 480;
+    canvas.height = 270;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Fast JPEG encoding (~18KB)
+    const base64Image = canvas.toDataURL('image/jpeg', 0.6);
+
+    const startTime = performance.now();
+    try {
+      abortControllerRef.current = new AbortController();
+      const result = await analyzeFrameFast(base64Image, abortControllerRef.current.signal);
+
+      if (result && result.success) {
+        const latency = Math.round(performance.now() - startTime);
+        setAiLatency(latency);
+        setLiveMetrics(result.metrics || null);
+        detectionsRef.current = result.detections || [];
+        onAnalysisResult(result);
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.warn('Fast stream tick notice:', err);
+      }
+    }
+
+    // Immediately trigger next frame if still streaming (zero setInterval delay)
+    if (isStreamingRef.current) {
+      setTimeout(runAiStreamingLoop, 20);
+    }
+  }, [onAnalysisResult]);
+
+  // ── 60 FPS Tactical HUD Canvas Rendering ──────────────────────────────────
+  useEffect(() => {
+    let animationFrameId;
+
+    const renderHud = () => {
+      const hudCanvas = hudCanvasRef.current;
+      const video = videoRef.current;
+
+      if (hudCanvas && video && video.readyState === 4) {
+        const width = video.videoWidth || 640;
+        const height = video.videoHeight || 360;
+
+        if (hudCanvas.width !== width || hudCanvas.height !== height) {
+          hudCanvas.width = width;
+          hudCanvas.height = height;
+        }
+
+        const ctx = hudCanvas.getContext('2d');
+        ctx.clearRect(0, 0, width, height);
+
+        // Calculate smooth FPS
+        frameCountRef.current += 1;
+        const now = Date.now();
+        if (now - lastFpsTimeRef.current >= 1000) {
+          setFps(frameCountRef.current);
+          frameCountRef.current = 0;
+          lastFpsTimeRef.current = now;
+        }
+
+        // Draw HUD Overlays for detected potholes
+        const detections = detectionsRef.current || [];
+        const scaleX = width / 480;
+        const scaleY = height / 270;
+
+        detections.forEach((det, i) => {
+          if (!det.bbox) return;
+
+          const x1 = (det.bbox.x1 || 0) * scaleX;
+          const y1 = (det.bbox.y1 || 0) * scaleY;
+          const x2 = (det.bbox.x2 || 0) * scaleX;
+          const y2 = (det.bbox.y2 || 0) * scaleY;
+          const bw = x2 - x1;
+          const bh = y2 - y1;
+
+          // Glowing monochrome bounding box
+          ctx.save();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 2.5;
+          ctx.shadowColor = '#ffffff';
+          ctx.shadowBlur = 12;
+
+          // Tactical Reticle Brackets
+          const bLen = Math.min(20, Math.min(bw, bh) * 0.35);
+          // Top-Left
+          ctx.beginPath();
+          ctx.moveTo(x1, y1 + bLen);
+          ctx.lineTo(x1, y1);
+          ctx.lineTo(x1 + bLen, y1);
+          ctx.stroke();
+
+          // Top-Right
+          ctx.beginPath();
+          ctx.moveTo(x2 - bLen, y1);
+          ctx.lineTo(x2, y1);
+          ctx.lineTo(x2, y1 + bLen);
+          ctx.stroke();
+
+          // Bottom-Left
+          ctx.beginPath();
+          ctx.moveTo(x1, y2 - bLen);
+          ctx.lineTo(x1, y2);
+          ctx.lineTo(x1 + bLen, y2);
+          ctx.stroke();
+
+          // Bottom-Right
+          ctx.beginPath();
+          ctx.moveTo(x2 - bLen, y2);
+          ctx.lineTo(x2, y2);
+          ctx.lineTo(x2, y2 - bLen);
+          ctx.stroke();
+
+          // Center Crosshair
+          const cx = x1 + bw / 2;
+          const cy = y1 + bh / 2;
+          ctx.beginPath();
+          ctx.moveTo(cx - 6, cy);
+          ctx.lineTo(cx + 6, cy);
+          ctx.moveTo(cx, cy - 6);
+          ctx.lineTo(cx, cy + 6);
+          ctx.stroke();
+
+          // Tag Pill Badge
+          const tag = `DEFECT #${det.id || i + 1} • ${det.severity || 'POTHOLE'} • ${(det.confidence * 100).toFixed(0)}%`;
+          ctx.font = 'bold 12px "JetBrains Mono", monospace';
+          const textMetrics = ctx.measureText(tag);
+          const pWidth = textMetrics.width + 16;
+          const pHeight = 22;
+          const tagY = Math.max(10, y1 - 28);
+
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(x1, tagY, pWidth, pHeight);
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(x1, tagY, pWidth, pHeight);
+
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(tag, x1 + 8, tagY + 15);
+
+          ctx.restore();
+        });
+      }
+
+      animationFrameId = requestAnimationFrame(renderHud);
+    };
+
+    if (isCameraActive) {
+      animationFrameId = requestAnimationFrame(renderHud);
+    }
+
+    return () => {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+    };
+  }, [isCameraActive]);
+
+  // ── Toggle Live AI Streaming ──────────────────────────────────────────────
+  const toggleStreaming = useCallback(() => {
+    if (isLiveAnalyzing) {
+      isStreamingRef.current = false;
+      setIsLiveAnalyzing(false);
+      if (abortControllerRef.current) abortControllerRef.current.abort();
+    } else {
+      isStreamingRef.current = true;
+      setIsLiveAnalyzing(true);
+      runAiStreamingLoop();
+    }
+  }, [isLiveAnalyzing, runAiStreamingLoop]);
+
+  // ── Full-Resolution Snapshot Capture ──────────────────────────────────────
+  const handleFullSnapshot = useCallback(async () => {
+    if (!videoRef.current || !canvasRef.current) return;
     const video = videoRef.current;
     if (video.readyState !== 4) return;
 
     const canvas = canvasRef.current;
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
     const ctx = canvas.getContext('2d');
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 360;
-
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const base64Image = canvas.toDataURL('image/jpeg', 0.8);
+    const base64Image = canvas.toDataURL('image/jpeg', 0.85);
 
-    isProcessingRef.current = true;
     try {
-      const now = Date.now();
       const result = await analyzeFrame(base64Image);
-      if (result.success) {
-        setLiveOverlay(result.images?.annotated || null);
-        setLiveMetrics(result.metrics || null);
+      if (result && result.success) {
         onAnalysisResult(result);
-
-        const delta = (Date.now() - now) / 1000;
-        setFps(Math.round(1 / Math.max(0.1, delta)));
       }
     } catch (err) {
-      console.warn('Live tick error:', err);
-    } finally {
-      isProcessingRef.current = false;
+      console.warn('Snapshot error:', err);
     }
   }, [onAnalysisResult]);
 
-  // ── Live Stream Loop ──────────────────────────────────────────────────────
-  useEffect(() => {
-    if (isLiveAnalyzing && isCameraActive) {
-      timerRef.current = setInterval(() => {
-        captureAndAnalyze();
-      }, 450);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
-    }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [isLiveAnalyzing, isCameraActive, captureAndAnalyze]);
-
   useEffect(() => {
     return () => {
+      isStreamingRef.current = false;
       if (stream) {
         stream.getTracks().forEach((track) => track.stop());
       }
@@ -151,22 +319,19 @@ export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGloba
           className={`h-full w-full object-cover ${!isCameraActive ? 'hidden' : ''}`}
         />
 
+        {/* 60 FPS Hardware-Accelerated Canvas HUD Overlay */}
+        <canvas
+          ref={hudCanvasRef}
+          className={`absolute inset-0 h-full w-full object-cover pointer-events-none z-15 ${!isCameraActive ? 'hidden' : ''}`}
+        />
+
+        {/* Hidden Processing Canvas */}
+        <canvas ref={canvasRef} style={{ display: 'none' }} />
+
         {/* Laser Scanning Line during live AI */}
         {isCameraActive && isLiveAnalyzing && (
           <div className="animate-scanline z-10"></div>
         )}
-
-        {/* Live Annotated Overlay */}
-        {liveOverlay && isLiveAnalyzing && (
-          <img
-            src={`data:image/jpeg;base64,${liveOverlay}`}
-            alt="Real-time detection overlay"
-            className="absolute inset-0 h-full w-full object-cover pointer-events-none z-10"
-          />
-        )}
-
-        {/* Hidden Canvas */}
-        <canvas ref={canvasRef} style={{ display: 'none' }} />
 
         {/* Camera Inactive Empty State */}
         {!isCameraActive && (
@@ -200,16 +365,23 @@ export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGloba
           </div>
         )}
 
-        {/* Tactical HUD Overlay Elements */}
+        {/* Tactical HUD Telemetry Badges */}
         {isCameraActive && (
           <div className="absolute top-4 left-4 z-20 flex flex-wrap gap-2">
-            <div className="flex items-center gap-2 rounded-full border border-white/20 bg-black/70 px-3 py-1 text-[11px] font-mono text-white backdrop-blur-md">
+            <div className="flex items-center gap-2 rounded-full border border-white/20 bg-black/75 px-3 py-1 text-[11px] font-mono text-white backdrop-blur-md">
               <span className={`h-2 w-2 rounded-full ${isLiveAnalyzing ? 'bg-white animate-ping' : 'bg-zinc-500'}`}></span>
-              <span>{isLiveAnalyzing ? `AI ACTIVE (${fps} FPS)` : 'VIEWFINDER READY'}</span>
+              <span>{isLiveAnalyzing ? `AI ACTIVE (${fps} FPS)` : `VIEWFINDER (${fps} FPS)`}</span>
             </div>
 
+            {isLiveAnalyzing && aiLatency > 0 && (
+              <div className="flex items-center gap-1.5 rounded-full border border-white/20 bg-black/75 px-3 py-1 text-[11px] font-mono text-white backdrop-blur-md">
+                <Zap className="h-3 w-3 text-white" />
+                <span>{aiLatency}ms CLOUD AI</span>
+              </div>
+            )}
+
             {liveMetrics && (
-              <div className="flex items-center gap-2 rounded-full border border-white/20 bg-black/70 px-3 py-1 text-[11px] font-mono text-white backdrop-blur-md">
+              <div className="flex items-center gap-2 rounded-full border border-white/20 bg-black/75 px-3 py-1 text-[11px] font-mono text-white backdrop-blur-md">
                 <Crosshair className="h-3 w-3 text-white" />
                 <span>DEFECTS: {liveMetrics.pothole_count}</span>
               </div>
@@ -225,9 +397,9 @@ export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGloba
           
           <div className="flex flex-wrap items-center gap-2.5">
             
-            {/* Stream Toggle */}
+            {/* Real-Time Stream Toggle */}
             <button
-              onClick={() => setIsLiveAnalyzing(!isLiveAnalyzing)}
+              onClick={toggleStreaming}
               className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
                 isLiveAnalyzing
                   ? 'bg-zinc-800 text-white border border-white/30 hover:bg-zinc-700'
@@ -245,11 +417,10 @@ export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGloba
               )}
             </button>
 
-            {/* Manual Snapshot */}
+            {/* Manual High-Res Snapshot */}
             <button
-              onClick={captureAndAnalyze}
-              disabled={isLiveAnalyzing}
-              className="flex items-center gap-2 rounded-xl border border-white/15 bg-zinc-900 px-4 py-2.5 text-xs font-semibold text-white hover:bg-zinc-800 disabled:opacity-40 transition-all cursor-pointer"
+              onClick={handleFullSnapshot}
+              className="flex items-center gap-2 rounded-xl border border-white/15 bg-zinc-900 px-4 py-2.5 text-xs font-semibold text-white hover:bg-zinc-800 transition-all cursor-pointer"
             >
               <Eye className="h-3.5 w-3.5 text-zinc-300" />
               Capture Blueprint Snapshot

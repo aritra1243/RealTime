@@ -1,40 +1,38 @@
 // =============================================================================
-// PotholeVision — Gradio 5 ZeroGPU Client
+// PotholeVision — High-Performance ZeroGPU Client
 // =============================================================================
-// Seamlessly communicates with Hugging Face Gradio 5 ZeroGPU backend.
 
 const API_BASE = import.meta.env.VITE_API_URL || 'https://ari1324-potholevision-api.hf.space';
 
 /**
- * Helper to call Gradio 5 named API endpoints (/gradio_api/call/<api_name>).
+ * Call Gradio 5 SSE endpoint (/gradio_api/call/<api_name>).
  */
-async function callGradioApi(apiName, dataArray) {
+async function callGradioApi(apiName, dataArray, signal) {
   const url = `${API_BASE}/gradio_api/call/${apiName}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ data: dataArray }),
+    signal,
   });
 
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
-    throw new Error(`API error ${res.status}: ${errText || 'Inference request failed'}`);
+    throw new Error(`API ${res.status}: ${errText || 'Inference failed'}`);
   }
 
   const { event_id } = await res.json();
   if (!event_id) {
-    throw new Error('No event_id returned from backend.');
+    throw new Error('No event_id from inference backend.');
   }
 
-  // Fetch the SSE result from /gradio_api/call/<api_name>/<event_id>
-  const eventRes = await fetch(`${url}/${event_id}`);
+  const eventRes = await fetch(`${url}/${event_id}`, { signal });
   if (!eventRes.ok) {
-    throw new Error(`Inference stream error ${eventRes.status}`);
+    throw new Error(`Stream error ${eventRes.status}`);
   }
 
   const eventText = await eventRes.text();
 
-  // Find SSE data: [...] line
   for (const line of eventText.split('\n')) {
     if (line.startsWith('data:')) {
       const jsonStr = line.slice(5).trim();
@@ -49,7 +47,7 @@ async function callGradioApi(apiName, dataArray) {
     }
   }
 
-  throw new Error('Inference server returned empty result.');
+  throw new Error('Empty inference response.');
 }
 
 /**
@@ -68,7 +66,14 @@ export async function checkHealth() {
 }
 
 /**
- * Upload an image file and run the full detection + depth pipeline.
+ * High-Speed Real-Time Video Frame Streamer.
+ */
+export async function analyzeFrameFast(base64Image, signal) {
+  return await callGradioApi('analyze_fast', [base64Image], signal);
+}
+
+/**
+ * Full-Fidelity Image Upload Analysis (includes CAD Blueprint & Heatmap).
  */
 export async function analyzeImage(imageFile) {
   return new Promise((resolve, reject) => {
@@ -88,21 +93,21 @@ export async function analyzeImage(imageFile) {
 }
 
 /**
- * Analyze a live video / camera frame (base64 string).
+ * Analyze a video frame with full pipeline.
  */
 export async function analyzeFrame(base64Image) {
   return await callGradioApi('analyze', [base64Image]);
 }
 
 /**
- * Analyze the built-in sample image.
+ * Analyze built-in sample image.
  */
 export async function analyzeSample() {
   return await callGradioApi('sample', []);
 }
 
 /**
- * Get 3D surface mesh data for a specific detection.
+ * Get 3D surface mesh for a detection.
  */
 export async function get3DMesh(detectionIndex) {
   return await callGradioApi('analyze_3d', [String(detectionIndex)]);
