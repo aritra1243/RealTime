@@ -1,122 +1,105 @@
 # =============================================================================
-# PotholeVision — MiDaS Depth Estimator
+# PotholeVision — MiDaS Depth Estimator & Fallback
 # =============================================================================
 
+import os
+import sys
 import cv2
 import numpy as np
 import torch
 
-import sys
-import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 
 class DepthEstimator:
     """
-    Monocular depth estimation using MiDaS.
-    
-    Produces a relative depth map from a single RGB image.
-    The depth values are relative (higher = farther from camera).
+    Monocular depth estimation using MiDaS with robust CV fallback.
     """
 
     def __init__(self, model_type: str = None):
-        """
-        Initialize the depth estimator.
-        
-        Args:
-            model_type: MiDaS model type. Options:
-                        "DPT_Large"   — highest quality, slowest
-                        "DPT_Hybrid"  — balanced
-                        "MiDaS_small" — fastest, good enough for real-time
-        """
         self.model_type = model_type or config.MIDAS_MODEL_TYPE
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        print(f"[Depth] Loading MiDaS model: {self.model_type} on {self.device}")
-
-        # Load model from PyTorch Hub (trust_repo=True avoids interactive prompts)
-        self.model = torch.hub.load("intel-isl/MiDaS", self.model_type, trust_repo=True)
-        self.model.to(self.device)
-        self.model.eval()
-
-        # Load the appropriate transform
-        midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms", trust_repo=True)
-        if self.model_type == "DPT_Large" or self.model_type == "DPT_Hybrid":
-            self.transform = midas_transforms.dpt_transform
-        else:
-            self.transform = midas_transforms.small_transform
-
-        print(f"[Depth] MiDaS loaded successfully.")
+        self.model = None
+        self.transform = None
         self._last_depth_map = None
+
+        print(f"[Depth] Initializing MiDaS model: {self.model_type} on {self.device}")
+        try:
+            # Try to load MiDaS from PyTorch Hub
+            self.model = torch.hub.load("intel-isl/MiDaS", self.model_type, trust_repo=True)
+            self.model.to(self.device)
+            self.model.eval()
+
+            midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms", trust_repo=True)
+            if self.model_type in ["DPT_Large", "DPT_Hybrid"]:
+                self.transform = midas_transforms.dpt_transform
+            else:
+                self.transform = midas_transforms.small_transform
+
+            print("[Depth] MiDaS loaded successfully.")
+        except Exception as e:
+            print(f"[Depth] Warning: Could not initialize MiDaS PyTorch model ({e}). Using CV Surface Gradient Depth Fallback.")
+            self.model = None
 
     def estimate(self, frame: np.ndarray) -> np.ndarray:
         """
         Estimate depth from a single BGR frame.
-        
-        Args:
-            frame: BGR image (H x W x 3)
-            
-        Returns:
-            depth_map: Float32 array (H x W) with relative depth values.
-                       Higher values = farther from camera.
-                       Normalized to [0, 1] range.
         """
         h, w = frame.shape[:2]
 
-        # Convert BGR to RGB
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if self.model is not None and self.transform is not None:
+            try:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                input_batch = self.transform(rgb).to(self.device)
 
-        # Apply MiDaS transform
-        input_batch = self.transform(rgb).to(self.device)
+                with torch.no_grad():
+                    prediction = self.model(input_batch)
+                    prediction = torch.nn.functional.interpolate(
+                        prediction.unsqueeze(1),
+                        size=(h, w),
+                        mode="bicubic",
+                        align_corners=False,
+                    ).squeeze()
 
-        # Inference
-        with torch.no_grad():
-            prediction = self.model(input_batch)
+                depth_map = prediction.cpu().numpy()
 
-            # Resize to original frame size
-            prediction = torch.nn.functional.interpolate(
-                prediction.unsqueeze(1),
-                size=(h, w),
-                mode="bicubic",
-                align_corners=False,
-            ).squeeze()
+                depth_min = depth_map.min()
+                depth_max = depth_map.max()
+                if depth_max - depth_min > 0:
+                    depth_map = (depth_map - depth_min) / (depth_max - depth_min)
+                else:
+                    depth_map = np.zeros_like(depth_map)
 
-        # Convert to numpy
-        depth_map = prediction.cpu().numpy()
+                self._last_depth_map = depth_map.astype(np.float32)
+                return self._last_depth_map
+            except Exception as e:
+                print(f"[Depth] PyTorch estimation failed ({e}). Falling back to CV depth gradient.")
 
-        # Normalize to [0, 1]
-        depth_min = depth_map.min()
-        depth_max = depth_map.max()
-        if depth_max - depth_min > 0:
-            depth_map = (depth_map - depth_min) / (depth_max - depth_min)
-        else:
-            depth_map = np.zeros_like(depth_map)
+        # Fallback Monocular Perspective Gradient Depth Estimation
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Perspective depth: bottom of image is closer (0), top is farther (1)
+        y_gradient = np.linspace(1.0, 0.0, h, dtype=np.float32)[:, np.newaxis]
+        perspective_grid = np.repeat(y_gradient, w, axis=1)
+
+        # Texture and edge darkness indicates depression depth
+        blurred = cv2.GaussianBlur(gray, (21, 21), 0)
+        local_contrast = (blurred.astype(np.float32) - gray.astype(np.float32)) / 255.0
+        depth_map = np.clip(perspective_grid + local_contrast * 0.5, 0.0, 1.0)
 
         self._last_depth_map = depth_map.astype(np.float32)
         return self._last_depth_map
 
     def get_colored_depth(self, depth_map: np.ndarray = None) -> np.ndarray:
-        """
-        Convert depth map to a colored visualization.
-        
-        Args:
-            depth_map: Float32 depth map [0, 1]. If None, uses last estimated.
-            
-        Returns:
-            colored: BGR image (H x W x 3) with colormap applied.
-        """
         if depth_map is None:
             depth_map = self._last_depth_map
         if depth_map is None:
             return None
 
-        # Convert to uint8 for colormap
         depth_uint8 = (depth_map * 255).astype(np.uint8)
         colored = cv2.applyColorMap(depth_uint8, config.DEPTH_COLORMAP)
         return colored
 
     @property
     def last_depth_map(self):
-        """Return the last computed depth map."""
         return self._last_depth_map
