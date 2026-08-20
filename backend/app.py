@@ -1,8 +1,9 @@
 # =============================================================================
-# PotholeVision — Flask REST API Backend
+# PotholeVision — Unified FastAPI + Gradio Backend
 # =============================================================================
-# Serves pothole detection, depth analysis, and 3D mesh data via REST endpoints.
-# Compatible with Render, Hugging Face Spaces (CPU & ZeroGPU), and Vercel.
+# High-performance AI backend with native Hugging Face Gradio & ZeroGPU support,
+# plus full REST API endpoints (/api/analyze, /api/health, /api/analyze/3d, /api/sample)
+# for the Vercel React frontend.
 
 import base64
 import io
@@ -14,9 +15,10 @@ import traceback
 
 import cv2
 import numpy as np
-
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+import gradio as gr
+from fastapi import FastAPI, Request, File, UploadFile
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -42,20 +44,6 @@ except Exception:
         return func
 
     print("[API] Running in standard CPU/GPU mode.")
-
-# ─── App Setup ───────────────────────────────────────────────────────────────
-
-app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
-
-
-@app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
-    response.headers["Access-Control-Allow-Methods"] = "GET,PUT,POST,DELETE,OPTIONS"
-    return response
-
 
 # ─── Lazy-loaded ML Models ──────────────────────────────────────────────────
 
@@ -85,34 +73,21 @@ def encode_image_base64(img: np.ndarray, quality: int = 85) -> str:
     return base64.b64encode(buffer).decode("utf-8")
 
 
-def decode_image_data(req) -> np.ndarray:
-    """
-    Decode image from multipart file or base64 JSON payload.
-    Supports real-time webcam frames and file uploads.
-    """
-    # 1. Check multipart file
-    if "image" in req.files:
-        file = req.files["image"]
-        if file.filename != "":
-            file_bytes = np.frombuffer(file.read(), np.uint8)
-            img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-            if img is not None:
-                return img
+def decode_image_bytes(file_bytes: bytes) -> np.ndarray:
+    """Decode raw bytes into a BGR OpenCV image."""
+    nparr = np.frombuffer(file_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("Could not decode image data.")
+    return img
 
-    # 2. Check JSON with base64 data
-    if req.is_json:
-        data = req.get_json()
-        if data and "image" in data:
-            b64_str = data["image"]
-            if "," in b64_str:
-                b64_str = b64_str.split(",", 1)[1]
-            img_bytes = base64.b64decode(b64_str)
-            nparr = np.frombuffer(img_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if img is not None:
-                return img
 
-    raise ValueError("No valid 'image' provided (supports file upload or base64 JSON).")
+def decode_image_base64_str(b64_str: str) -> np.ndarray:
+    """Decode base64 string or data URL into BGR OpenCV image."""
+    if "," in b64_str:
+        b64_str = b64_str.split(",", 1)[1]
+    img_bytes = base64.b64decode(b64_str)
+    return decode_image_bytes(img_bytes)
 
 
 def detection_to_dict(det: Detection, index: int) -> dict:
@@ -208,70 +183,138 @@ def _execute_pipeline(frame: np.ndarray) -> dict:
     }
 
 
-# ZeroGPU registered function
+# ZeroGPU registered inference function
 @gpu_decorate
 def run_pipeline(frame: np.ndarray) -> dict:
     return _execute_pipeline(frame)
 
 
-# ─── API Routes ──────────────────────────────────────────────────────────────
+# ─── Gradio Interactive Web UI ───────────────────────────────────────────────
 
 
-@app.route("/", methods=["GET"])
-def root():
-    """Root endpoint."""
-    return jsonify({
-        "status": "online",
-        "service": "PotholeVision API",
-        "message": "Backend API is running. Connect your Vercel frontend to this URL.",
-        "version": "2.0.0",
-        "endpoints": {
-            "health": "/api/health",
-            "analyze": "/api/analyze (POST - multipart or base64 JSON)",
-            "3d_mesh": "/api/analyze/3d (POST)",
-            "sample": "/api/sample (GET)"
-        }
-    })
+def gradio_predict(img):
+    """Handler for Hugging Face embedded Gradio interface."""
+    if img is None:
+        return None, "Please upload or capture a road image."
+
+    # Convert RGB from Gradio to BGR for OpenCV
+    bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    res = run_pipeline(bgr)
+
+    # Decode annotated output back to RGB for display
+    ann_b64 = res["images"]["annotated"]
+    ann_bytes = base64.b64decode(ann_b64)
+    ann_bgr = cv2.imdecode(np.frombuffer(ann_bytes, np.uint8), cv2.IMREAD_COLOR)
+    ann_rgb = cv2.cvtColor(ann_bgr, cv2.COLOR_BGR2RGB)
+
+    metrics = res["metrics"]
+    summary = (
+        f"🛣️ Road Status: {metrics['road_status']}\n"
+        f"🕳️ Potholes Detected: {metrics['pothole_count']}\n"
+        f"📏 Max Depth: {metrics['max_depth']:.4f}\n"
+        f"📦 Total Volume: {metrics['total_volume']:.1f}\n"
+        f"⚡ Latency: {metrics['latency_ms']:.1f} ms"
+    )
+    return ann_rgb, summary
 
 
-@app.route("/api/health", methods=["GET"])
-def health_check():
+with gr.Blocks(title="PotholeVision AI", theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# 🕳️ PotholeVision — Real-Time Road Defect & Depth Analysis")
+    gr.Markdown(
+        "AI-powered monocular depth estimation, YOLOv8 segmentation, and 3D surface topography.\n"
+        "**REST API is active at `/api/analyze`, `/api/health`, and `/api/analyze/3d` for the React/Vercel frontend.**"
+    )
+    with gr.Row():
+        with gr.Column():
+            input_img = gr.Image(type="numpy", label="Road Image / Camera Feed")
+            btn = gr.Button("🔍 Analyze Road Defect", variant="primary")
+        with gr.Column():
+            output_img = gr.Image(label="Annotated Detection & Depth Map")
+            output_txt = gr.Textbox(label="Audit Metrics", lines=6)
+
+    btn.click(fn=gradio_predict, inputs=input_img, outputs=[output_img, output_txt])
+
+
+# ─── FastAPI REST API Setup ──────────────────────────────────────────────────
+
+app = FastAPI(title="PotholeVision API", version="2.0.0")
+
+# Enable CORS for all origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/api/health")
+async def health_check():
     """Health check endpoint."""
-    return jsonify({
+    return {
         "status": "ok",
         "service": "PotholeVision API",
         "version": "2.0.0",
-    })
+    }
 
 
-@app.route("/api/analyze", methods=["POST", "OPTIONS"])
-def analyze_image():
+@app.post("/api/analyze")
+async def analyze_image(request: Request):
     """
-    Analyze a road image for potholes and depth defects.
-    Accepts both multipart/form-data ('image' file) and application/json ({'image': base64}).
+    Analyze image from multipart form data or base64 JSON payload.
+    Supports real-time live camera streaming and file uploads.
     """
-    if request.method == "OPTIONS":
-        return jsonify({"status": "ok"}), 200
-
     try:
-        frame = decode_image_data(request)
+        content_type = request.headers.get("content-type", "")
+
+        # 1. Check if multipart form data
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            file = form.get("image")
+            if not file:
+                return JSONResponse(status_code=400, content={"success": False, "error": "No 'image' file provided."})
+            file_bytes = await file.read()
+            frame = decode_image_bytes(file_bytes)
+
+        # 2. Check if JSON payload (base64 webcam frame)
+        elif "application/json" in content_type:
+            body = await request.json()
+            if not body or "image" not in body:
+                return JSONResponse(status_code=400, content={"success": False, "error": "No 'image' in JSON payload."})
+            frame = decode_image_base64_str(body["image"])
+
+        else:
+            # Fallback read raw body
+            body_bytes = await request.body()
+            if body_bytes:
+                try:
+                    data = json.loads(body_bytes.decode("utf-8"))
+                    if "image" in data:
+                        frame = decode_image_base64_str(data["image"])
+                    else:
+                        frame = decode_image_bytes(body_bytes)
+                except Exception:
+                    frame = decode_image_bytes(body_bytes)
+            else:
+                return JSONResponse(status_code=400, content={"success": False, "error": "Empty request."})
+
         result = run_pipeline(frame)
-        return jsonify(result)
+        return JSONResponse(content=result)
 
     except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
+        return JSONResponse(status_code=400, content={"success": False, "error": str(e)})
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
+        return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-@app.route("/api/sample", methods=["GET"])
-def analyze_sample():
-    """Analyze the built-in sample pothole image."""
+@app.get("/api/sample")
+async def analyze_sample():
+    """Analyze built-in sample image."""
     try:
         sample_path = os.path.join(config.ASSETS_DIR, "sample_pothole.jpg")
         if not os.path.exists(sample_path):
-            # Generate sample dynamically if not present
             try:
                 from generate_sample import generate_sample_pothole_image
                 generate_sample_pothole_image(sample_path)
@@ -279,63 +322,40 @@ def analyze_sample():
                 pass
 
         if not os.path.exists(sample_path):
-            return jsonify({
-                "success": False,
-                "error": "Sample image not found.",
-            }), 404
+            return JSONResponse(status_code=404, content={"success": False, "error": "Sample image not found."})
 
         frame = cv2.imread(sample_path)
         if frame is None:
-            return jsonify({"success": False, "error": "Could not read sample image."}), 500
+            return JSONResponse(status_code=500, content={"success": False, "error": "Could not read sample image."})
 
         result = run_pipeline(frame)
-        return jsonify(result)
+        return JSONResponse(content=result)
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
+        return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
 
-@app.route("/api/analyze/3d", methods=["POST", "OPTIONS"])
-def get_3d_mesh():
-    """
-    Get 3D surface mesh data for a specific detected pothole.
-    Expects JSON body: { "detection_index": 0 }
-    """
-    if request.method == "OPTIONS":
-        return jsonify({"status": "ok"}), 200
-
+@app.post("/api/analyze/3d")
+async def get_3d_mesh(request: Request):
+    """Get 3D surface mesh data for a specific detection."""
     try:
-        data = request.get_json()
-        if data is None:
-            return jsonify({"success": False, "error": "JSON body required."}), 400
-
+        data = await request.json()
         det_index = data.get("detection_index", 0)
 
         detections = _models.get("_last_detections", [])
         depth_map = _models.get("_last_depth_map", None)
 
         if not detections or depth_map is None:
-            return jsonify({
-                "success": False,
-                "error": "No analysis results available. Call /api/analyze first.",
-            }), 400
+            return JSONResponse(status_code=400, content={"success": False, "error": "No analysis results. Call /api/analyze first."})
 
         if det_index < 0 or det_index >= len(detections):
-            return jsonify({
-                "success": False,
-                "error": f"Invalid detection_index. Must be 0-{len(detections) - 1}.",
-            }), 400
+            return JSONResponse(status_code=400, content={"success": False, "error": "Invalid detection index."})
 
         det = detections[det_index]
-
         if det.mask is None or depth_map is None:
-            return jsonify({
-                "success": False,
-                "error": "No mask or depth data for this detection.",
-            }), 400
+            return JSONResponse(status_code=400, content={"success": False, "error": "No mask or depth data."})
 
-        # Extract 3D surface data
         x1, y1, x2, y2 = det.bbox
         x1 = max(0, x1)
         y1 = max(0, y1)
@@ -346,15 +366,12 @@ def get_3d_mesh():
         region_mask = det.mask[y1:y2, x1:x2]
 
         if region_depth.size == 0:
-            return jsonify({"success": False, "error": "Empty pothole region."}), 400
+            return JSONResponse(status_code=400, content={"success": False, "error": "Empty region."})
 
         ref_depth = float(np.median(region_depth))
-
-        # Calculate depression (negative depth into ground)
         z_vals = -(region_depth - ref_depth)
         z_vals[region_mask == 0] = 0
 
-        # Downsample for web rendering
         step = max(1, min(region_depth.shape) // 60)
         z_down = z_vals[::step, ::step]
 
@@ -362,7 +379,7 @@ def get_3d_mesh():
         y_arr = (np.arange(z_down.shape[0]) * config.REAL_WORLD_SCALE * step).tolist()
         z_arr = z_down.tolist()
 
-        return jsonify({
+        return JSONResponse(content={
             "success": True,
             "detection_index": det_index,
             "severity": det.severity,
@@ -382,18 +399,21 @@ def get_3d_mesh():
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
+        return JSONResponse(status_code=500, content={"success": False, "error": f"Server error: {str(e)}"})
 
+
+# Mount Gradio Blocks UI onto the root of FastAPI
+app = gr.mount_gradio_app(app, demo, path="/")
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 7860))
-    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+    import uvicorn
 
+    port = int(os.environ.get("PORT", 7860))
     print("=" * 60)
-    print("  PotholeVision — Flask REST API")
+    print("  PotholeVision — FastAPI + Gradio Unified Server")
     print(f"  Running on http://0.0.0.0:{port}")
     print("=" * 60)
 
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    uvicorn.run(app, host="0.0.0.0", port=port)
