@@ -332,7 +332,7 @@ def get_3d_mesh():
 # ─── Entry Point ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 7860))
     debug = os.environ.get("FLASK_ENV", "development") == "development"
 
     print("=" * 60)
