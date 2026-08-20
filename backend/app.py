@@ -1,7 +1,6 @@
 # =============================================================================
-# PotholeVision — Gradio 5 + FastAPI Unified Backend
+# PotholeVision — High-Performance Gradio 5 + ZeroGPU Backend
 # =============================================================================
-# Native Hugging Face Spaces & ZeroGPU support + full REST API endpoints
 
 import base64
 import io
@@ -14,9 +13,6 @@ import traceback
 import cv2
 import numpy as np
 import gradio as gr
-from fastapi import Request
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -63,7 +59,7 @@ def get_models():
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def encode_image_base64(img: np.ndarray, quality: int = 85) -> str:
+def encode_image_base64(img: np.ndarray, quality: int = 75) -> str:
     """Encode a BGR OpenCV image to base64 JPEG string."""
     encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
     _, buffer = cv2.imencode(".jpg", img, encode_params)
@@ -111,7 +107,7 @@ def detection_to_dict(det: Detection, index: int) -> dict:
     }
 
 
-def _execute_pipeline(frame: np.ndarray) -> dict:
+def _execute_pipeline(frame: np.ndarray, is_fast_stream: bool = False) -> dict:
     """Run detection, depth estimation, and blueprint rendering."""
     models = get_models()
     detector = models["detector"]
@@ -122,12 +118,17 @@ def _execute_pipeline(frame: np.ndarray) -> dict:
 
     start_time = time.time()
 
+    # If in fast stream mode, optimize frame scale for high FPS
+    if is_fast_stream and max(frame.shape[:2]) > 640:
+        scale = 640.0 / max(frame.shape[:2])
+        frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
+
     # ── Detection ────────────────────────────────────
     detections = detector.detect(frame)
 
     # ── Depth estimation ─────────────────────────────
     depth_map = depth_estimator.estimate(frame)
-    depth_colored = depth_estimator.get_colored_depth(depth_map)
+    depth_colored = depth_estimator.get_colored_depth(depth_map) if not is_fast_stream else None
 
     # ── Analysis ─────────────────────────────────────
     detections = analyzer.analyze(detections, depth_map, frame.shape)
@@ -136,14 +137,16 @@ def _execute_pipeline(frame: np.ndarray) -> dict:
 
     # ── Render annotated overlay ─────────────────────
     display = overlay.render(frame, detections, depth_map, depth_colored)
-    annotated_b64 = encode_image_base64(display)
+    annotated_b64 = encode_image_base64(display, quality=65 if is_fast_stream else 85)
 
-    # ── Render blueprint panel ───────────────────────
-    bp_panel = blueprint.render(detections, depth_map)
-    blueprint_b64 = encode_image_base64(bp_panel)
-
-    # ── Depth heatmap ────────────────────────────────
-    heatmap_b64 = encode_image_base64(depth_colored) if depth_colored is not None else None
+    # ── Render blueprint & heatmap (only in full mode to maximize stream FPS) ──
+    if not is_fast_stream:
+        bp_panel = blueprint.render(detections, depth_map)
+        blueprint_b64 = encode_image_base64(bp_panel, quality=80)
+        heatmap_b64 = encode_image_base64(depth_colored, quality=80) if depth_colored is not None else None
+    else:
+        blueprint_b64 = None
+        heatmap_b64 = None
 
     # ── Metrics ──────────────────────────────────────
     worst_severity = "CLEAR"
@@ -158,7 +161,7 @@ def _execute_pipeline(frame: np.ndarray) -> dict:
     # ── Serialize detections ─────────────────────────
     detections_data = [detection_to_dict(d, i) for i, d in enumerate(detections)]
 
-    # ── Store detections + depth_map in memory for 3D requests ──
+    # Store for 3D requests
     _models["_last_detections"] = detections
     _models["_last_depth_map"] = depth_map
 
@@ -182,24 +185,17 @@ def _execute_pipeline(frame: np.ndarray) -> dict:
 
 # ZeroGPU registered inference function
 @gpu_decorate
-def run_pipeline(frame: np.ndarray) -> dict:
-    return _execute_pipeline(frame)
+def run_pipeline(frame: np.ndarray, is_fast_stream: bool = False) -> dict:
+    return _execute_pipeline(frame, is_fast_stream)
 
 
-# ─── Gradio Predict Function ─────────────────────────────────────────────────
+# ─── Gradio Predict Functions ────────────────────────────────────────────────
 
 
 def gradio_predict_json(image_input):
-    """
-    Primary JSON-returning prediction function for both Gradio UI and REST clients.
-    Accepts:
-      - numpy ndarray (from Gradio UI)
-      - string (base64 or data URL from REST/frontend)
-    Returns: JSON string with full detection metrics, coordinates, and base64 images.
-    """
+    """Full-fidelity analysis (for uploads and snapshots)."""
     if image_input is None:
         return json.dumps({"success": False, "error": "No image provided."})
-
     try:
         if isinstance(image_input, str):
             frame = decode_image_base64_str(image_input)
@@ -208,7 +204,26 @@ def gradio_predict_json(image_input):
         else:
             return json.dumps({"success": False, "error": "Unsupported image format."})
 
-        result = run_pipeline(frame)
+        result = run_pipeline(frame, is_fast_stream=False)
+        return json.dumps(result)
+    except Exception as e:
+        traceback.print_exc()
+        return json.dumps({"success": False, "error": str(e)})
+
+
+def gradio_predict_fast(image_input):
+    """High-speed real-time live camera analysis."""
+    if image_input is None:
+        return json.dumps({"success": False, "error": "No image provided."})
+    try:
+        if isinstance(image_input, str):
+            frame = decode_image_base64_str(image_input)
+        elif isinstance(image_input, np.ndarray):
+            frame = cv2.cvtColor(image_input, cv2.COLOR_RGB2BGR)
+        else:
+            return json.dumps({"success": False, "error": "Unsupported image format."})
+
+        result = run_pipeline(frame, is_fast_stream=True)
         return json.dumps(result)
     except Exception as e:
         traceback.print_exc()
@@ -223,7 +238,7 @@ def gradio_predict_sample():
             from generate_sample import generate_sample_pothole_image
             generate_sample_pothole_image(sample_path)
         frame = cv2.imread(sample_path)
-        result = run_pipeline(frame)
+        result = run_pipeline(frame, is_fast_stream=False)
         return json.dumps(result)
     except Exception as e:
         traceback.print_exc()
@@ -292,6 +307,7 @@ with gr.Blocks(title="PotholeVision AI") as demo:
         with gr.Column():
             input_text = gr.Textbox(label="Image Data URL / Base64 / File", placeholder="data:image/jpeg;base64,...")
             analyze_btn = gr.Button("Analyze Road Image", variant="primary")
+            fast_analyze_btn = gr.Button("Fast Stream Inference")
         with gr.Column():
             output_json = gr.JSON(label="Analysis Results (JSON)")
 
@@ -304,6 +320,7 @@ with gr.Blocks(title="PotholeVision AI") as demo:
 
     # Register named APIs for direct frontend access:
     analyze_btn.click(fn=gradio_predict_json, inputs=input_text, outputs=output_json, api_name="analyze")
+    fast_analyze_btn.click(fn=gradio_predict_fast, inputs=input_text, outputs=output_json, api_name="analyze_fast")
     sample_btn.click(fn=gradio_predict_sample, inputs=[], outputs=sample_output, api_name="sample")
     mesh_3d_btn.click(fn=gradio_predict_3d, inputs=det_idx_input, outputs=mesh_3d_output, api_name="analyze_3d")
 
