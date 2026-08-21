@@ -112,7 +112,9 @@ export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGloba
         setAiLatency(latency);
         setLiveMetrics(result.metrics || null);
         detectionsRef.current = result.detections || [];
-        onAnalysisResult(result);
+        // NOTE: Do NOT call onAnalysisResult here — it floods App state,
+        // triggers ThreeDViewer/DetectionView re-renders every frame, and
+        // crashes the browser tab (blank screen). Only update local HUD.
       }
     } catch (err) {
       if (err.name !== 'AbortError') {
@@ -120,11 +122,11 @@ export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGloba
       }
     }
 
-    // Immediately trigger next frame if still streaming (zero setInterval delay)
+    // Next frame — 500ms minimum gap to avoid flooding the remote API
     if (isStreamingRef.current) {
-      setTimeout(runAiStreamingLoop, 20);
+      setTimeout(runAiStreamingLoop, 500);
     }
-  }, [onAnalysisResult]);
+  }, []);
 
   // ── 60 FPS Tactical HUD Canvas Rendering ──────────────────────────────────
   useEffect(() => {
@@ -390,6 +392,30 @@ export default function LiveCamera({ onAnalysisResult, onError, isAnalyzingGloba
         )}
 
       </div>
+
+      {/* ── Live AI Metrics Bar (Inline — does NOT trigger heavy App re-renders) ── */}
+      {isCameraActive && isLiveAnalyzing && liveMetrics && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div className="flex flex-col rounded-xl border border-white/10 bg-zinc-950/80 p-3 backdrop-blur-xl">
+            <span className="text-[10px] font-mono font-bold tracking-widest text-zinc-400 uppercase">Road Status</span>
+            <span className={`text-sm font-black font-mono mt-1 ${liveMetrics.road_status === 'CRITICAL' ? 'text-white animate-pulse' : liveMetrics.road_status === 'MODERATE' ? 'text-zinc-200' : 'text-zinc-400'}`}>
+              {liveMetrics.road_status || 'CLEAR'}
+            </span>
+          </div>
+          <div className="flex flex-col rounded-xl border border-white/10 bg-zinc-950/80 p-3 backdrop-blur-xl">
+            <span className="text-[10px] font-mono font-bold tracking-widest text-zinc-400 uppercase">Defects</span>
+            <span className="text-sm font-black font-mono mt-1 text-white">{liveMetrics.pothole_count ?? 0}</span>
+          </div>
+          <div className="flex flex-col rounded-xl border border-white/10 bg-zinc-950/80 p-3 backdrop-blur-xl">
+            <span className="text-[10px] font-mono font-bold tracking-widest text-zinc-400 uppercase">Max Depth</span>
+            <span className="text-sm font-black font-mono mt-1 text-white">{liveMetrics.max_depth?.toFixed(4) ?? '0.0000'}</span>
+          </div>
+          <div className="flex flex-col rounded-xl border border-white/10 bg-zinc-950/80 p-3 backdrop-blur-xl">
+            <span className="text-[10px] font-mono font-bold tracking-widest text-zinc-400 uppercase">AI Latency</span>
+            <span className="text-sm font-black font-mono mt-1 text-white">{aiLatency}ms</span>
+          </div>
+        </div>
+      )}
 
       {/* ── Controls Bar ───────────────────────────────────────────────────── */}
       {isCameraActive && (

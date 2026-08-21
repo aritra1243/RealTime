@@ -2,7 +2,7 @@
 // PotholeVision — Monochrome Interactive 3D Surface Topography Viewer
 // =============================================================================
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Box, RefreshCw, AlertTriangle, Layers } from 'lucide-react';
 import { get3DMesh } from '../api/client';
 
@@ -24,24 +24,47 @@ export default function ThreeDViewer({ detections }) {
       });
   }, []);
 
-  // Load 3D mesh on select
+  // Track whether initial mesh load has been attempted for current detections
+  const [meshLoaded, setMeshLoaded] = useState(false);
+
+  // Reset mesh state when detections identity changes (new analysis result)
+  const detectionsLengthRef = useRef(0);
   useEffect(() => {
+    const newLen = detections?.length ?? 0;
+    if (newLen !== detectionsLengthRef.current) {
+      detectionsLengthRef.current = newLen;
+      setMeshLoaded(false);
+      setMeshData(null);
+      setSelectedIndex(0);
+    }
+  }, [detections]);
+
+  // Load 3D mesh — only on manual selection or first load trigger
+  const loadMesh = useCallback((index) => {
     if (!detections || detections.length === 0) return;
 
     setLoading(true);
     setError(null);
 
-    get3DMesh(selectedIndex)
+    get3DMesh(index)
       .then((data) => {
         if (data.success) {
           setMeshData(data);
+          setMeshLoaded(true);
         } else {
           setError(data.error || 'Failed to load 3D topography.');
         }
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [selectedIndex, detections]);
+  }, [detections]);
+
+  // Auto-load mesh once when detections arrive (but not on every update)
+  useEffect(() => {
+    if (!meshLoaded && detections && detections.length > 0) {
+      loadMesh(selectedIndex);
+    }
+  }, [meshLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!detections || detections.length === 0) return null;
 
@@ -67,7 +90,11 @@ export default function ThreeDViewer({ detections }) {
           <select
             id="defect-select"
             value={selectedIndex}
-            onChange={(e) => setSelectedIndex(parseInt(e.target.value))}
+            onChange={(e) => {
+              const idx = parseInt(e.target.value);
+              setSelectedIndex(idx);
+              loadMesh(idx);
+            }}
             className="rounded-xl border border-white/20 bg-zinc-900 px-3 py-1.5 text-xs font-mono font-bold text-white shadow-inner focus:border-white focus:outline-none cursor-pointer"
           >
             {detections.map((det, i) => (

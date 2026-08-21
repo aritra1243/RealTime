@@ -38,3 +38,7 @@ frontend/.env.production.local
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ─── Separate Repositories ──────────────────────────────
+hf_space/
+
